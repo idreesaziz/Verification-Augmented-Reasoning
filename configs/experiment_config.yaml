@@ -1,0 +1,56 @@
+# Verification-Augmented Reasoning (VAR) - Experiment Configuration
+
+model:
+  default: "gemini-2.5-flash"
+  ceiling: "gemini-2.5-pro"
+  temperature:
+    reasoning: 0.3
+    inference: 0.3
+    code_fix: 0.2
+    one_shot: 0.3
+
+limits:
+  max_steps: 25
+  code_retries_per_step: 3
+  inference_retries_per_step: 5
+  cascade_backtracks: 3
+  total_backtracks: 20
+  code_execution_timeout: 30  # seconds
+
+sandbox:
+  memory_limit: "512m"
+  cpus: 1.0
+  network: false
+  docker_image: "var-reasoning-sandbox"
+
+benchmarks:
+  default_num_problems: 200
+  random_seed: 42
+  datasets:
+    gsm8k:
+      name: "openai/gsm8k"
+      subset: "main"
+      split: "test"
+    math:
+      name: "lighteval/MATH"
+      subset: "all"
+      split: "test"
+    folio:
+      name: "yale-nlp/FOLIO"
+      subset: ~
+      split: "validation"
+    humaneval:
+      name: "openai/openai_humaneval"
+      subset: ~
+      split: "test"
+
+cost:
+  gemini-2.5-flash:
+    input_per_million: 0.15
+    output_per_million: 0.60
+  gemini-2.5-pro:
+    input_per_million: 1.25
+    output_per_million: 10.00
+
+results:
+  output_dir: "results"
