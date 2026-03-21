@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,22 @@ from docker.errors import BuildError, ContainerError, ImageNotFound
 
 IMAGE_NAME = "var-reasoning-sandbox"
 DOCKERFILE_DIR = Path(__file__).parent
+
+
+def strip_markdown_fences(code: str) -> str:
+    """Remove markdown code fences if the LLM wraps code in them."""
+    code = code.strip()
+    # Strip ```python ... ``` or ``` ... ```
+    if code.startswith("```"):
+        lines = code.splitlines()
+        # Remove opening fence
+        if lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        # Remove closing fence
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        code = "\n".join(lines)
+    return code
 
 
 class CodeExecutor:
@@ -47,9 +64,23 @@ class CodeExecutor:
     def execute(self, code: str, timeout: int | None = None) -> tuple[bool, str]:
         """Execute code in sandbox. Returns (success, stdout_or_error)."""
         timeout = timeout or self._timeout
+        code = strip_markdown_fences(code)
 
-        # Build cumulative script so variables persist across steps
-        full_script = "\n".join(self._cumulative_code + [code])
+        # Suppress stdout from prior steps so we only capture new output.
+        # We do this by wrapping prior code in a redirect block.
+        prior = "\n".join(self._cumulative_code)
+        if prior:
+            suppressed_prior = (
+                "import sys as _sys, io as _io\n"
+                "_old_stdout = _sys.stdout\n"
+                "_sys.stdout = _io.StringIO()\n"
+                + prior + "\n"
+                "_sys.stdout = _old_stdout\n"
+            )
+        else:
+            suppressed_prior = ""
+
+        full_script = suppressed_prior + code
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
