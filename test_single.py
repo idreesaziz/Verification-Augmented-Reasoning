@@ -94,8 +94,8 @@ class LocalExecutor:
 
 # ── Config ──────────────────────────────────────────────────────────
 PROBLEM = (
-    "A store sells notebooks for $4 each. If you buy 5 or more, you get a 20% discount. "
-    "Sarah buys 7 notebooks. How much does she pay in total?"
+    "Find all 3-digit numbers where the number equals the sum of the cubes of its digits. "
+    "List all such numbers."
 )
 # You can swap this out for any problem text you want to test.
 
@@ -144,6 +144,11 @@ def main():
         print(f"   (tokens: {usage.input_tokens} in, {usage.output_tokens} out)")
 
         # Check for final answer
+        if step_output is None:
+            print("   ⚠ Empty response from LLM, retrying...")
+            bt.handle_code_failure(session)
+            continue
+
         if step_output.final_answer:
             print(f"\n🏁 FINAL ANSWER: {step_output.final_answer.answer}")
             print(f"   Justification: {step_output.final_answer.justification}")

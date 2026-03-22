@@ -60,6 +60,7 @@ class GeminiProvider:
                 temperature=0.3,
                 response_mime_type="application/json",
                 response_schema=StepOutput,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         usage = self._track_usage(response)
@@ -76,6 +77,7 @@ class GeminiProvider:
                 temperature=0.3,
                 response_mime_type="application/json",
                 response_schema=InferenceStep,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         usage = self._track_usage(response)
@@ -89,6 +91,7 @@ class GeminiProvider:
                 temperature=0.2,
                 response_mime_type="application/json",
                 response_schema=CodeFix,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         usage = self._track_usage(response)
@@ -104,6 +107,7 @@ class GeminiProvider:
                 temperature=0.3,
                 response_mime_type="application/json",
                 response_schema=InferenceRevision,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         usage = self._track_usage(response)
@@ -119,6 +123,7 @@ class GeminiProvider:
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.3,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
             ),
         )
         usage = self._track_usage(response)
