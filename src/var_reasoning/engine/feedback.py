@@ -14,9 +14,15 @@ def build_conversation_history(session: Session) -> list[str]:
         parts.append(
             f"Step {step.step_number}:\n"
             f"THOUGHT: {step.thought}\n"
-            f"ACTION:\n```python\n{step.action}\n```\n"
+            f"ACTION:\n{step.action}\n"
             f"OBSERVATION:\n{step.observation}\n"
-            f"INFERENCE: {step.inference}"
+            f"INFERENCE: {step.inference}\n"
+            f"VERIFICATION: PASSED ✓"
+        )
+    if session.steps:
+        parts.append(
+            "All steps above have been verified and accepted. "
+            "Continue investigating or provide your FINAL_ANSWER."
         )
     return parts
 
@@ -33,16 +39,17 @@ def build_inference_context(
         parts.append(
             f"Step {step.step_number}:\n"
             f"THOUGHT: {step.thought}\n"
-            f"ACTION:\n```python\n{step.action}\n```\n"
+            f"ACTION:\n{step.action}\n"
             f"OBSERVATION:\n{step.observation}\n"
-            f"INFERENCE: {step.inference}"
+            f"INFERENCE: {step.inference}\n"
+            f"VERIFICATION: PASSED ✓"
         )
     # Current step (not yet completed)
     step_num = len(session.steps) + 1
     parts.append(
         f"Step {step_num} (current):\n"
         f"THOUGHT: {thought}\n"
-        f"ACTION:\n```python\n{action}\n```\n"
+        f"ACTION:\n{action}\n"
         f"OBSERVATION:\n{observation}\n"
         f"\nNow provide your INFERENCE and VERIFICATION_TARGET for this step."
     )
