@@ -1,35 +1,37 @@
 """Prompt template for inference revision requests."""
 
 INFERENCE_RETRY_PROMPT_TEMPLATE = """\
-Your inference failed formal verification. You must either revise the
-inference with a new verification target, or request a new investigation.
+Your inference failed verification. Read the error carefully, then choose:
 
-## Problem Context
+1. "revise" — fix the inference. Provide all four fields: revised_premises,
+   revised_conclusion, revised_reasoning_pattern, revised_verification_target.
+   - If the error says TAUTOLOGICAL: your verification did no real work.
+     Write code that independently recomputes or cross-checks the claim.
+   - If the error says pattern/vtype mismatch: use the required type
+     (algebraic→sympy, universal_claim→z3).
+2. "investigate" — the observation is insufficient. Provide a thought
+   and action (Python code) to gather new evidence.
+
+## Problem
 {problem_text}
 
-## Step History
+## Prior Steps
 {step_history}
 
-## Current Observation
-The code executed successfully and produced:
+## Observation
 ```
 {observation}
 ```
 
 ## Failed Inference
-{inference}
+Premises: {premises}
+Conclusion: {conclusion}
+Pattern: {reasoning_pattern}
 
-## Verification Failure
-Type: {verification_type}
+## Error ({verification_type})
 {failure_details}
 
 {prior_attempts_section}
-
-Choose one:
-1. "revise" — Provide a corrected inference and updated verification
-   target that will pass verification.
-2. "investigate" — The observation is insufficient. Provide a new
-   thought and action (Python code) to gather more information.
 """
 
 
@@ -37,7 +39,9 @@ def build_inference_retry_prompt(
     problem_text: str,
     step_history: str,
     observation: str,
-    inference: str,
+    premises: list[str],
+    conclusion: str,
+    reasoning_pattern: str,
     verification_type: str,
     failure_details: str,
     prior_attempts: list[tuple[str, str, str]] | None = None,
@@ -64,7 +68,9 @@ def build_inference_retry_prompt(
         problem_text=problem_text,
         step_history=step_history,
         observation=observation,
-        inference=inference,
+        premises="; ".join(premises) if premises else "(none)",
+        conclusion=conclusion,
+        reasoning_pattern=reasoning_pattern,
         verification_type=verification_type,
         failure_details=failure_details,
         prior_attempts_section=prior_section,
