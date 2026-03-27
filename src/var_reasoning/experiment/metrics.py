@@ -71,13 +71,18 @@ def compute_aggregate_metrics(results: list[dict]) -> dict:
 
     # Verification metrics
     vtype_counts: dict[str, int] = {}
+    pattern_counts: dict[str, int] = {}
     total_informal = 0
+    total_informal_without_reason = 0
     total_verifications = 0
     for r in results:
         for vtype, count in r.get("verification_type_counts", {}).items():
             vtype_counts[vtype] = vtype_counts.get(vtype, 0) + count
             total_verifications += count
+        for pat, count in r.get("reasoning_pattern_counts", {}).items():
+            pattern_counts[pat] = pattern_counts.get(pat, 0) + count
         total_informal += r.get("informal_skip_count", 0)
+        total_informal_without_reason += r.get("informal_without_reason_count", 0)
 
     unsolvable = sum(
         1 for r in results if r.get("predicted_answer") == "UNSOLVABLE"
@@ -103,9 +108,18 @@ def compute_aggregate_metrics(results: list[dict]) -> dict:
             k: round(v / total_verifications, 4) if total_verifications > 0 else 0
             for k, v in vtype_counts.items()
         },
+        "reasoning_pattern_distribution": {
+            k: round(v / total_verifications, 4) if total_verifications > 0 else 0
+            for k, v in pattern_counts.items()
+        },
         "informal_skip_rate": (
             round(total_informal / total_verifications, 4)
             if total_verifications > 0
+            else 0.0
+        ),
+        "informal_without_reason_rate": (
+            round(total_informal_without_reason / max(total_informal, 1), 4)
+            if total_informal > 0
             else 0.0
         ),
         "formalization_rate": (

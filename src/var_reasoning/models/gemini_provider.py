@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 
 from google import genai
 from google.genai import types
+from google.genai.errors import ServerError
 
 from var_reasoning.models.schemas import (
     CodeFix,
@@ -14,6 +16,9 @@ from var_reasoning.models.schemas import (
     InferenceStep,
     StepOutput,
 )
+
+_MAX_RETRIES = 3
+_RETRY_DELAY = 5  # seconds
 
 
 @dataclass
@@ -48,11 +53,21 @@ class GeminiProvider:
     def reset_usage(self) -> None:
         self._cumulative_usage = TokenUsage()
 
+    def _call(self, **kwargs) -> types.GenerateContentResponse:
+        """Call generate_content with retry on transient server errors."""
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return self._client.models.generate_content(**kwargs)
+            except ServerError:
+                if attempt == _MAX_RETRIES - 1:
+                    raise
+                time.sleep(_RETRY_DELAY * (attempt + 1))
+
     def generate_reasoning_step(
         self, system_prompt: str, conversation: list[str]
     ) -> tuple[StepOutput, TokenUsage]:
         contents = "\n\n".join(conversation)
-        response = self._client.models.generate_content(
+        response = self._call(
             model=self.model_name,
             contents=contents,
             config=types.GenerateContentConfig(
@@ -61,6 +76,7 @@ class GeminiProvider:
                 response_mime_type="application/json",
                 response_schema=StepOutput,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
             ),
         )
         usage = self._track_usage(response)
@@ -69,7 +85,7 @@ class GeminiProvider:
     def generate_inference(
         self, system_prompt: str, observation_context: str
     ) -> tuple[InferenceStep, TokenUsage]:
-        response = self._client.models.generate_content(
+        response = self._call(
             model=self.model_name,
             contents=observation_context,
             config=types.GenerateContentConfig(
@@ -78,13 +94,14 @@ class GeminiProvider:
                 response_mime_type="application/json",
                 response_schema=InferenceStep,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
             ),
         )
         usage = self._track_usage(response)
         return response.parsed, usage
 
     def generate_code_fix(self, prompt: str) -> tuple[CodeFix, TokenUsage]:
-        response = self._client.models.generate_content(
+        response = self._call(
             model=self.model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -92,6 +109,7 @@ class GeminiProvider:
                 response_mime_type="application/json",
                 response_schema=CodeFix,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
             ),
         )
         usage = self._track_usage(response)
@@ -100,7 +118,7 @@ class GeminiProvider:
     def generate_inference_revision(
         self, prompt: str
     ) -> tuple[InferenceRevision, TokenUsage]:
-        response = self._client.models.generate_content(
+        response = self._call(
             model=self.model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -108,6 +126,7 @@ class GeminiProvider:
                 response_mime_type="application/json",
                 response_schema=InferenceRevision,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
             ),
         )
         usage = self._track_usage(response)
@@ -117,13 +136,14 @@ class GeminiProvider:
         self, problem: str, system_prompt: str, model_override: str | None = None
     ) -> tuple[str, TokenUsage]:
         model = model_override or self.model_name
-        response = self._client.models.generate_content(
+        response = self._call(
             model=model,
             contents=problem,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.3,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
             ),
         )
         usage = self._track_usage(response)

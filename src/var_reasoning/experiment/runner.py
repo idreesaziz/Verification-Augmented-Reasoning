@@ -152,7 +152,9 @@ class ExperimentRunner:
                     "total_output_tokens": usage.output_tokens,
                     "cost_usd": round(cost, 6),
                     "verification_type_counts": {},
+                    "reasoning_pattern_counts": {},
                     "informal_skip_count": 0,
+                    "informal_without_reason_count": 0,
                 }
                 f.write(json.dumps(result) + "\n")
                 f.flush()
@@ -191,7 +193,9 @@ class ExperimentRunner:
                     "total_output_tokens": session.total_output_tokens,
                     "cost_usd": round(cost, 6),
                     "verification_type_counts": session.verification_type_counts,
+                    "reasoning_pattern_counts": session.reasoning_pattern_counts,
                     "informal_skip_count": session.informal_skip_count,
+                    "informal_without_reason_count": session.informal_without_reason_count,
                 }
                 f.write(json.dumps(result) + "\n")
                 f.flush()
@@ -233,7 +237,9 @@ class ExperimentRunner:
                     "total_output_tokens": session.total_output_tokens,
                     "cost_usd": round(cost, 6),
                     "verification_type_counts": session.verification_type_counts,
+                    "reasoning_pattern_counts": session.reasoning_pattern_counts,
                     "informal_skip_count": session.informal_skip_count,
+                    "informal_without_reason_count": session.informal_without_reason_count,
                 }
                 f.write(json.dumps(result) + "\n")
                 f.flush()
