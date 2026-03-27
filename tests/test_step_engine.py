@@ -10,6 +10,7 @@ from var_reasoning.models.gemini_provider import GeminiProvider, TokenUsage
 from var_reasoning.models.schemas import (
     FinalAnswer,
     InferenceStep,
+    ReasoningPattern,
     ReasoningStep,
     StepOutput,
     VerificationTarget,
@@ -68,7 +69,11 @@ class TestStepEngine:
             (
                 StepOutput(
                     reasoning=ReasoningStep(
-                        thought="Compute 6*7", action="print(6*7)"
+                        objective="Compute 6*7",
+                        depends_on=[],
+                        thought="Compute 6*7",
+                        action="print(6*7)",
+                        result_variable="product",
                     )
                 ),
                 _usage(),
@@ -83,7 +88,9 @@ class TestStepEngine:
         mock_executor.execute.return_value = (True, "42")
         mock_gemini.generate_inference.return_value = (
             InferenceStep(
-                inference="6*7=42",
+                premises=["P1: 6*7 computed", "P2: result was 42"],
+                conclusion="6*7=42",
+                reasoning_pattern=ReasoningPattern.ALGEBRAIC,
                 verification_target=VerificationTarget(
                     type=VerificationType.PYTHON_ASSERT,
                     statement="assert 6*7 == 42",
@@ -101,7 +108,7 @@ class TestStepEngine:
         assert session.final_answer == "42"
         assert len(session.steps) == 1
         assert session.steps[0].observation == "42"
-        assert session.steps[0].inference == "6*7=42"
+        assert session.steps[0].conclusion == "6*7=42"
 
     def test_code_failure_triggers_repair(
         self, mock_gemini, mock_executor, mock_router
@@ -111,7 +118,11 @@ class TestStepEngine:
             (
                 StepOutput(
                     reasoning=ReasoningStep(
-                        thought="Compute", action="prnt(1)"
+                        objective="Compute",
+                        depends_on=[],
+                        thought="Compute",
+                        action="prnt(1)",
+                        result_variable="r",
                     )
                 ),
                 _usage(),
@@ -136,7 +147,9 @@ class TestStepEngine:
         )
         mock_gemini.generate_inference.return_value = (
             InferenceStep(
-                inference="result is 1",
+                premises=["P1: print(1) returned 1"],
+                conclusion="result is 1",
+                reasoning_pattern=ReasoningPattern.ALGEBRAIC,
                 verification_target=VerificationTarget(
                     type=VerificationType.PYTHON_ASSERT,
                     statement="assert True",
@@ -162,7 +175,13 @@ class TestStepEngine:
         mock_gemini.generate_reasoning_step.side_effect = [
             (
                 StepOutput(
-                    reasoning=ReasoningStep(thought="t", action="print(1)")
+                    reasoning=ReasoningStep(
+                        objective="t",
+                        depends_on=[],
+                        thought="t",
+                        action="print(1)",
+                        result_variable="r",
+                    )
                 ),
                 _usage(),
             ),
@@ -176,7 +195,9 @@ class TestStepEngine:
         mock_executor.execute.return_value = (True, "1")
         mock_gemini.generate_inference.return_value = (
             InferenceStep(
-                inference="wrong",
+                premises=["P1: observed 1"],
+                conclusion="wrong",
+                reasoning_pattern=ReasoningPattern.ALGEBRAIC,
                 verification_target=VerificationTarget(
                     type=VerificationType.PYTHON_ASSERT,
                     statement="assert False",
@@ -195,7 +216,7 @@ class TestStepEngine:
         mock_gemini.generate_inference_revision.return_value = (
             InferenceRevision(
                 choice="revise",
-                revised_inference="still wrong",
+                revised_conclusion="still wrong",
                 revised_verification_target=VerificationTarget(
                     type=VerificationType.PYTHON_ASSERT,
                     statement="assert False",
@@ -223,7 +244,13 @@ class TestConditionBEngine:
         mock_gemini.generate_reasoning_step.side_effect = [
             (
                 StepOutput(
-                    reasoning=ReasoningStep(thought="t", action="print(1)")
+                    reasoning=ReasoningStep(
+                        objective="t",
+                        depends_on=[],
+                        thought="t",
+                        action="print(1)",
+                        result_variable="r",
+                    )
                 ),
                 _usage(),
             ),
@@ -237,7 +264,9 @@ class TestConditionBEngine:
         mock_executor.execute.return_value = (True, "1")
         mock_gemini.generate_inference.return_value = (
             InferenceStep(
-                inference="result is 1",
+                premises=["P1: observed 1"],
+                conclusion="result is 1",
+                reasoning_pattern=ReasoningPattern.ALGEBRAIC,
                 verification_target=VerificationTarget(
                     type=VerificationType.PYTHON_ASSERT,
                     statement="assert True",

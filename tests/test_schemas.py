@@ -8,6 +8,7 @@ from var_reasoning.models.schemas import (
     FinalAnswer,
     InferenceRevision,
     InferenceStep,
+    ReasoningPattern,
     ReasoningStep,
     StepOutput,
     VerificationTarget,
@@ -31,15 +32,15 @@ class TestVerificationTarget:
         )
         assert target.type == VerificationType.PYTHON_ASSERT
         assert target.statement == "assert 1 + 1 == 2"
-        assert target.premises is None
+        assert target.informal_reason is None
 
-    def test_with_premises(self):
+    def test_with_informal_reason(self):
         target = VerificationTarget(
-            type=VerificationType.Z3,
-            statement="from z3 import *; ...",
-            premises=["step_1", "step_2"],
+            type=VerificationType.INFORMAL,
+            statement="",
+            informal_reason="Cannot formalize semantic similarity",
         )
-        assert target.premises == ["step_1", "step_2"]
+        assert target.informal_reason == "Cannot formalize semantic similarity"
 
     def test_missing_required_fields(self):
         with pytest.raises(ValidationError):
@@ -50,31 +51,74 @@ class TestVerificationTarget:
             VerificationTarget(type="invalid", statement="x")
 
 
+class TestReasoningPattern:
+    def test_enum_values(self):
+        assert ReasoningPattern.EXHAUSTIVE_ENUMERATION == "exhaustive_enumeration"
+        assert ReasoningPattern.PRODUCT_RULE == "product_rule"
+        assert ReasoningPattern.UNIVERSAL_CLAIM == "universal_claim"
+        assert ReasoningPattern.EXISTENTIAL == "existential"
+        assert ReasoningPattern.ALGEBRAIC == "algebraic"
+        assert ReasoningPattern.CASE_ANALYSIS == "case_analysis"
+
+
 class TestReasoningStep:
     def test_valid(self):
         step = ReasoningStep(
+            objective="Compute X",
+            depends_on=[],
             thought="I need to compute X",
             action="print(1+1)",
+            result_variable="x",
         )
+        assert step.objective == "Compute X"
+        assert step.depends_on == []
         assert step.thought == "I need to compute X"
         assert step.action == "print(1+1)"
+        assert step.result_variable == "x"
 
     def test_missing_fields(self):
         with pytest.raises(ValidationError):
-            ReasoningStep(thought="test")  # missing action
+            ReasoningStep(thought="test")  # missing action and others
 
 
 class TestInferenceStep:
     def test_valid(self):
         step = InferenceStep(
-            inference="The result is 2",
+            premises=["P1: computed 6*7", "P2: result was 42"],
+            conclusion="6*7 equals 42",
+            reasoning_pattern=ReasoningPattern.ALGEBRAIC,
             verification_target=VerificationTarget(
                 type=VerificationType.PYTHON_ASSERT,
-                statement="assert result == 2",
+                statement="assert 6*7 == 42",
             ),
         )
-        assert step.inference == "The result is 2"
+        assert step.premises == ["P1: computed 6*7", "P2: result was 42"]
+        assert step.conclusion == "6*7 equals 42"
+        assert step.reasoning_pattern == ReasoningPattern.ALGEBRAIC
         assert step.verification_target.type == VerificationType.PYTHON_ASSERT
+
+    def test_missing_premises_fails(self):
+        with pytest.raises(ValidationError):
+            InferenceStep(
+                conclusion="6*7 equals 42",
+                reasoning_pattern=ReasoningPattern.ALGEBRAIC,
+                verification_target=VerificationTarget(
+                    type=VerificationType.PYTHON_ASSERT,
+                    statement="assert 6*7 == 42",
+                ),
+            )
+
+    def test_invalid_pattern_fails(self):
+        with pytest.raises(ValidationError):
+            InferenceStep(
+                premises=["P1"],
+                conclusion="test",
+                reasoning_pattern="made_up_pattern",
+                verification_target=VerificationTarget(
+                    type=VerificationType.PYTHON_ASSERT,
+                    statement="assert True",
+                ),
+            )
 
 
 class TestFinalAnswer:
@@ -87,7 +131,13 @@ class TestFinalAnswer:
 class TestStepOutput:
     def test_with_reasoning(self):
         output = StepOutput(
-            reasoning=ReasoningStep(thought="think", action="code"),
+            reasoning=ReasoningStep(
+                objective="think",
+                depends_on=[],
+                thought="think",
+                action="code",
+                result_variable="r",
+            ),
         )
         assert output.reasoning is not None
         assert output.final_answer is None
@@ -115,13 +165,17 @@ class TestInferenceRevision:
     def test_revise(self):
         rev = InferenceRevision(
             choice="revise",
-            revised_inference="Updated conclusion",
+            revised_premises=["P1: updated"],
+            revised_conclusion="Updated conclusion",
+            revised_reasoning_pattern=ReasoningPattern.ALGEBRAIC,
             revised_verification_target=VerificationTarget(
                 type=VerificationType.PYTHON_ASSERT,
                 statement="assert True",
             ),
         )
         assert rev.choice == "revise"
+        assert rev.revised_premises == ["P1: updated"]
+        assert rev.revised_reasoning_pattern == ReasoningPattern.ALGEBRAIC
 
     def test_investigate(self):
         rev = InferenceRevision(

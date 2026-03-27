@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -20,7 +21,7 @@ from var_reasoning.engine.feedback import (
 )
 from var_reasoning.models.gemini_provider import GeminiProvider
 from var_reasoning.models.schemas import VerificationType
-from var_reasoning.models.state import CompletedStep, Session
+from var_reasoning.models.state import CompletedStep, Session, build_inference_string
 from var_reasoning.prompts.inference_prompt import INFERENCE_PROMPT
 from var_reasoning.prompts.reasoning_prompt import REASONING_PROMPT
 from var_reasoning.verification.verification_router import VerificationRouter
@@ -94,8 +95,12 @@ class LocalExecutor:
 
 # ── Config ──────────────────────────────────────────────────────────
 PROBLEM = (
-    "Find all 3-digit numbers where the number equals the sum of the cubes of its digits. "
-    "List all such numbers."
+    "In Texas Hold'em poker, find a specific scenario where:\n"
+    "1. You have the absolute nuts (best possible hand) on the flop.\n"
+    "2. You still have the absolute nuts on the turn.\n"
+    "3. On the river, you cannot win or even chop against ANY possible opponent holding.\n"
+    "These conditions must hold for all possible sets of opponent hole cards.\n"
+    "Describe: your hole cards, the flop (3 cards), the turn (1 card), and the river (1 card)."
 )
 # You can swap this out for any problem text you want to test.
 
@@ -104,7 +109,7 @@ SEPARATOR = "=" * 70
 
 def main():
     print(SEPARATOR)
-    print("VAR System — Single Problem Test")
+    print("VAR System -- Single Problem Test")
     print(SEPARATOR)
     print(f"\nPROBLEM:\n{PROBLEM}\n")
 
@@ -128,56 +133,61 @@ def main():
     step_num = 0
     while not bt.should_stop(session):
         step_num += 1
-        print(f"\n{'─' * 50}")
+        print(f"\n{'-' * 50}")
         print(f"  STEP {step_num}")
-        print(f"{'─' * 50}")
+        print(f"{'-' * 50}")
 
-        # Phase 1: Generate reasoning step
-        conversation = build_conversation_history(session)
-        print("\n📤 Calling LLM for reasoning step...")
-        step_output, usage = gemini.generate_reasoning_step(
-            REASONING_PROMPT, conversation
-        )
-        session.total_llm_calls += 1
-        session.total_input_tokens += usage.input_tokens
-        session.total_output_tokens += usage.output_tokens
-        print(f"   (tokens: {usage.input_tokens} in, {usage.output_tokens} out)")
+        # Phase 1: Generate reasoning step (retry on empty/malformed)
+        step_output = None
+        for _attempt in range(3):
+            conversation = build_conversation_history(session)
+            print(f"\n>>> Calling LLM for reasoning step (attempt {_attempt + 1})...", flush=True)
+            t0 = time.time()
+            raw_output, usage = gemini.generate_reasoning_step(
+                REASONING_PROMPT, conversation
+            )
+            print(f"<<< LLM returned in {time.time() - t0:.1f}s", flush=True)
+            session.total_llm_calls += 1
+            session.total_input_tokens += usage.input_tokens
+            session.total_output_tokens += usage.output_tokens
+            print(f"   (tokens: {usage.input_tokens} in, {usage.output_tokens} out)")
+            if raw_output is not None and (raw_output.final_answer or raw_output.reasoning):
+                step_output = raw_output
+                break
+            print("   [WARN] Empty/malformed response, retrying...")
 
-        # Check for final answer
         if step_output is None:
-            print("   ⚠ Empty response from LLM, retrying...")
+            print("   [FAIL] All retries failed, backtracking...")
             bt.handle_code_failure(session)
             continue
 
         if step_output.final_answer:
-            print(f"\n🏁 FINAL ANSWER: {step_output.final_answer.answer}")
+            print(f"\n[FINAL ANSWER] {step_output.final_answer.answer}")
             print(f"   Justification: {step_output.final_answer.justification}")
             session.final_answer = step_output.final_answer.answer
             session.justification = step_output.final_answer.justification
             break
 
-        if not step_output.reasoning:
-            print("   ⚠ Empty reasoning output, retrying...")
-            bt.handle_code_failure(session)
-            continue
-
         thought = step_output.reasoning.thought
         action = step_output.reasoning.action
+        objective = step_output.reasoning.objective
+        depends_on = step_output.reasoning.depends_on
+        result_variable = step_output.reasoning.result_variable
 
-        print(f"\n💭 THOUGHT:\n   {thought}")
-        print(f"\n💻 ACTION (code):\n{'─' * 40}")
+        print(f"\n[THOUGHT]\n   {thought}")
+        print(f"\n[ACTION (code)]\n{'-' * 40}")
         for line in action.splitlines():
             print(f"   {line}")
-        print(f"{'─' * 40}")
+        print(f"{'-' * 40}")
 
         # Phase 2: Execute code
-        print("\n⚙️  Executing code in sandbox...")
+        print("\n[EXEC] Running code in sandbox...")
         success, observation = executor.execute(action)
 
         if not success:
-            print(f"\n❌ CODE FAILED:\n   {observation}")
+            print(f"\n[FAIL] CODE FAILED:\n   {observation}")
             # Try repair
-            print("\n🔧 Attempting code repair...")
+            print("\n[REPAIR] Attempting code repair...")
             prior_attempts = []
             current_code = action
             current_error = observation
@@ -199,42 +209,47 @@ def main():
 
                 success, observation = executor.execute(current_code)
                 if success:
-                    print(f"   ✅ Repair succeeded!")
+                    print(f"   [OK] Repair succeeded!")
                     action = current_code
                     repaired = True
                     break
                 current_error = observation
-                print(f"   ❌ Still failing: {current_error[:100]}")
+                print(f"   [FAIL] Still failing: {current_error[:100]}")
 
             if not repaired:
-                print("   🔙 Code repair exhausted, backtracking...")
+                print("   [BACK] Code repair exhausted, backtracking...")
                 bt.handle_code_failure(session)
                 continue
 
-        print(f"\n👁️  OBSERVATION:\n{'─' * 40}")
+        print(f"\n[OBSERVATION]\n{'-' * 40}")
         for line in observation.splitlines():
             print(f"   {line}")
-        print(f"{'─' * 40}")
+        print(f"{'-' * 40}")
 
         # Phase 3: Generate inference + verification target
-        ctx = build_inference_context(session, thought, action, observation)
-        print("\n📤 Calling LLM for inference...")
+        ctx = build_inference_context(
+            session, thought, action, observation,
+            objective=objective, result_variable=result_variable,
+        )
+        print("\n>>> Calling LLM for inference...", flush=True)
+        t0 = time.time()
         inference_step, inf_usage = gemini.generate_inference(
             INFERENCE_PROMPT, ctx
         )
+        print(f"<<< LLM returned in {time.time() - t0:.1f}s", flush=True)
         session.total_llm_calls += 1
         session.total_input_tokens += inf_usage.input_tokens
         session.total_output_tokens += inf_usage.output_tokens
 
-        print(f"\n🧠 INFERENCE:\n   {inference_step.inference}")
-        print(f"\n🔍 VERIFICATION TARGET:")
+        print(f"\n[INFERENCE]\n   {inference_step.inference}")
+        print(f"\n[VERIFICATION TARGET]")
         print(f"   Type: {inference_step.verification_target.type.value}")
         print(f"   Code:")
         for line in inference_step.verification_target.statement.splitlines():
             print(f"     {line}")
 
         # Phase 4: Verify
-        print(f"\n⚡ Running verification...")
+        print(f"\n[VERIFY] Running verification...")
         result = router.verify(inference_step.verification_target)
         vtype = inference_step.verification_target.type.value
         session.verification_type_counts[vtype] = (
@@ -245,25 +260,33 @@ def main():
             session.informal_skip_count += 1
 
         if result.passed or inference_step.verification_target.type == VerificationType.INFORMAL:
-            status = "✅ PASSED" if result.passed else "⏭️  SKIPPED (informal)"
+            status = "PASSED" if result.passed else "SKIPPED (informal)"
             print(f"   {status}")
             bt.reset_cascade_counter()
             session.steps.append(
                 CompletedStep(
                     step_number=len(session.steps) + 1,
+                    objective=objective,
+                    depends_on=depends_on,
                     thought=thought,
                     action=action,
                     observation=observation,
-                    inference=inference_step.inference,
+                    result_variable=result_variable,
+                    premises=inference_step.premises,
+                    conclusion=inference_step.conclusion,
+                    reasoning_pattern=inference_step.reasoning_pattern,
+                    inference=build_inference_string(
+                        inference_step.premises, inference_step.conclusion
+                    ),
                     verification_target=inference_step.verification_target,
                     verification_result=result,
                 )
             )
         else:
-            print(f"   ❌ FAILED: {result.error_message}")
+            print(f"   [FAIL] {result.error_message}")
             if result.counterexample:
                 print(f"   Counterexample: {result.counterexample}")
-            print("   🔙 Backtracking (inference retry not shown in quick test)...")
+            print("   [BACK] Backtracking (inference retry not shown in quick test)...")
             bt.handle_inference_failure(session)
 
     # ── Summary ─────────────────────────────────────────────────────

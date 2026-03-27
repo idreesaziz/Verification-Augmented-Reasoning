@@ -15,19 +15,34 @@ class VerificationType(str, Enum):
     INFORMAL = "informal"
 
 
+class ReasoningPattern(str, Enum):
+    EXHAUSTIVE_ENUMERATION = "exhaustive_enumeration"
+    PRODUCT_RULE = "product_rule"
+    UNIVERSAL_CLAIM = "universal_claim"
+    EXISTENTIAL = "existential"
+    ALGEBRAIC = "algebraic"
+    CASE_ANALYSIS = "case_analysis"
+
+
 class VerificationTarget(BaseModel):
     type: VerificationType
     statement: str  # The actual Z3/SymPy/assert code to execute
-    premises: Optional[list[str]] = None  # References to prior steps
+    # Required when type == informal; soft-enforced (missing increments counter)
+    informal_reason: Optional[str] = None
 
 
 class ReasoningStep(BaseModel):
-    thought: str  # What to investigate and why
-    action: str  # Python code to execute
+    objective: str  # The ONE question this step answers
+    depends_on: list[str]  # result_variable names from prior steps this reads
+    thought: str  # Why this is the right next thing to do
+    action: str  # Python code that computes the answer
+    result_variable: str  # The ONE variable assigned and printed by the action
 
 
 class InferenceStep(BaseModel):
-    inference: str  # Conclusion drawn from observation
+    premises: list[str]  # Discrete factual claims from the observation
+    conclusion: str  # The single claim being drawn from the premises
+    reasoning_pattern: ReasoningPattern  # Strict: enum enforced by schema mode
     verification_target: VerificationTarget
 
 
@@ -50,7 +65,11 @@ class CodeFix(BaseModel):
 
 class InferenceRevision(BaseModel):
     choice: Literal["revise", "investigate"]
-    revised_inference: Optional[str] = None
+    # For choice == "revise": provide all three structured fields
+    revised_premises: Optional[list[str]] = None
+    revised_conclusion: Optional[str] = None
+    revised_reasoning_pattern: Optional[ReasoningPattern] = None
     revised_verification_target: Optional[VerificationTarget] = None
+    # For choice == "investigate": provide thought + action
     thought: Optional[str] = None
     action: Optional[str] = None

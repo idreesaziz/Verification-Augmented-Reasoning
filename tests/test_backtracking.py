@@ -3,17 +3,23 @@
 import pytest
 
 from var_reasoning.engine.backtracking import BacktrackManager
-from var_reasoning.models.schemas import VerificationTarget, VerificationType
+from var_reasoning.models.schemas import ReasoningPattern, VerificationTarget, VerificationType
 from var_reasoning.models.state import CompletedStep, Session, VerificationResult
 
 
 def _make_step(step_number: int) -> CompletedStep:
     return CompletedStep(
         step_number=step_number,
+        objective=f"objective {step_number}",
+        depends_on=[],
         thought=f"thought {step_number}",
         action=f"print({step_number})",
         observation=str(step_number),
-        inference=f"inference {step_number}",
+        result_variable=f"v{step_number}",
+        premises=[f"P1: observed {step_number}"],
+        conclusion=f"conclusion {step_number}",
+        reasoning_pattern=ReasoningPattern.ALGEBRAIC,
+        inference=f"Given: P1: observed {step_number} — I conclude: conclusion {step_number}",
         verification_target=VerificationTarget(
             type=VerificationType.PYTHON_ASSERT,
             statement=f"assert True",

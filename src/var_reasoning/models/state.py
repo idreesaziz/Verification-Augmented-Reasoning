@@ -6,7 +6,18 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from var_reasoning.models.schemas import VerificationTarget, VerificationType
+from var_reasoning.models.schemas import (
+    ReasoningPattern,
+    VerificationTarget,
+    VerificationType,
+)
+
+
+def build_inference_string(premises: list[str], conclusion: str) -> str:
+    """Derive a human-readable inference string from structured premises."""
+    if premises:
+        return "Given: " + " | ".join(premises) + " — I conclude: " + conclusion
+    return conclusion
 
 
 class VerificationResult(BaseModel):
@@ -18,10 +29,16 @@ class VerificationResult(BaseModel):
 
 class CompletedStep(BaseModel):
     step_number: int
+    objective: str  # The ONE question this step answered
+    depends_on: list[str]  # result_variable names from prior steps
     thought: str
     action: str  # Python code
     observation: str  # stdout from execution
-    inference: str
+    result_variable: str  # The variable this step produced
+    premises: list[str]
+    conclusion: str
+    reasoning_pattern: ReasoningPattern
+    inference: str  # derived: build_inference_string(premises, conclusion)
     verification_target: VerificationTarget
     verification_result: VerificationResult
 
@@ -39,4 +56,6 @@ class Session(BaseModel):
     total_code_retries: int = 0
     total_inference_retries: int = 0
     informal_skip_count: int = 0
+    informal_without_reason_count: int = 0
     verification_type_counts: dict[str, int] = Field(default_factory=dict)
+    reasoning_pattern_counts: dict[str, int] = Field(default_factory=dict)
