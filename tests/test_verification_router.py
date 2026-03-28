@@ -15,12 +15,19 @@ from var_reasoning.verification.verification_router import VerificationRouter
 
 @pytest.fixture
 def mock_executor():
+    """Return a mock executor that the factory will produce."""
     return MagicMock()
 
 
 @pytest.fixture
-def router(mock_executor):
-    return VerificationRouter(mock_executor)
+def mock_factory(mock_executor):
+    """Factory that always returns the same mock executor."""
+    return lambda: mock_executor
+
+
+@pytest.fixture
+def router(mock_factory):
+    return VerificationRouter(mock_factory)
 
 
 class TestVerificationRouter:

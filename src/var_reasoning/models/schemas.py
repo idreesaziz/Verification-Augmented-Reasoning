@@ -73,3 +73,10 @@ class InferenceRevision(BaseModel):
     # For choice == "investigate": provide thought + action
     thought: Optional[str] = None
     action: Optional[str] = None
+
+
+class SimulationCode(BaseModel):
+    """Output schema for the firewalled simulation LLM call."""
+
+    code: str  # Self-contained Python code that runs the simulation
+    description: str  # Brief description of what the simulation does

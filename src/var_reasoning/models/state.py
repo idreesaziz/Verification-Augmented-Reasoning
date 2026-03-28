@@ -26,6 +26,13 @@ class VerificationResult(BaseModel):
     error_message: Optional[str] = None
     counterexample: Optional[str] = None
 
+    # ── Simulation layer (Layer 1) ──────────────────────────────────
+    simulation_ran: bool = False
+    simulation_verdict: Optional[str] = None  # "accept" | "reject" | "suspect"
+    simulation_e_value: float = 1.0
+    simulation_empirical: Optional[float] = None
+    simulation_detail: str = ""
+
 
 class CompletedStep(BaseModel):
     step_number: int

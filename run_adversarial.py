@@ -241,7 +241,7 @@ def run_problem(gemini, executor, problem, log):
     log(f"Trap: {problem['trap']}")
     log("")
 
-    router = VerificationRouter(executor)
+    router = VerificationRouter(LocalExecutor, gemini=gemini)
     bt = BacktrackManager(
         code_retries=3,
         inference_retries=5,
@@ -362,8 +362,18 @@ def run_problem(gemini, executor, problem, log):
             log(f"  [informal_reason] {inference_step.verification_target.informal_reason}")
 
         # Phase 4: Verify
+        router.set_prior_code([step.action for step in session.steps])
         t0 = time.time()
-        result = router.verify(inference_step.verification_target)
+        result = router.verify(
+            inference_step.verification_target,
+            problem_text=problem["text"],
+            observation=observation,
+            result_variable=result_variable,
+            step_number=step_num,
+            conclusion=inference_step.conclusion,
+            depends_on=depends_on,
+            prior_observations=[step.observation for step in session.steps],
+        )
         ver_elapsed = time.time() - t0
 
         vtype_key = inference_step.verification_target.type.value
@@ -457,7 +467,17 @@ def run_problem(gemini, executor, problem, log):
                     session.total_llm_calls += 1
                     session.total_input_tokens += inf2_usage.input_tokens
                     session.total_output_tokens += inf2_usage.output_tokens
-                    res2 = router.verify(inf2.verification_target)
+                    router.set_prior_code([step.action for step in session.steps])
+                    res2 = router.verify(
+                        inf2.verification_target,
+                        problem_text=problem["text"],
+                        observation=new_obs,
+                        result_variable=result_variable,
+                        step_number=step_num,
+                        conclusion=inf2.conclusion,
+                        depends_on=depends_on,
+                        prior_observations=[step.observation for step in session.steps],
+                    )
                     vk2 = inf2.verification_target.type.value
                     session.verification_type_counts[vk2] = (
                         session.verification_type_counts.get(vk2, 0) + 1
@@ -520,7 +540,17 @@ def run_problem(gemini, executor, problem, log):
                     )
 
                     target = revision.revised_verification_target
-                    res2 = router.verify(target)
+                    router.set_prior_code([step.action for step in session.steps])
+                    res2 = router.verify(
+                        target,
+                        problem_text=problem["text"],
+                        observation=observation,
+                        result_variable=result_variable,
+                        step_number=step_num,
+                        conclusion=rev_conclusion,
+                        depends_on=depends_on,
+                        prior_observations=[step.observation for step in session.steps],
+                    )
                     vk2 = target.type.value
                     session.verification_type_counts[vk2] = (
                         session.verification_type_counts.get(vk2, 0) + 1

@@ -198,7 +198,7 @@ def run_problem(gemini, executor, problem, log):
     log(f"Expected: {problem['expected']}")
     log("")
 
-    router = VerificationRouter(executor)
+    router = VerificationRouter(LocalExecutor, gemini=gemini)
     bt = BacktrackManager()
     session = Session(problem_id=pid, problem_text=problem["text"])
     executor.reset_namespace()
@@ -304,8 +304,18 @@ def run_problem(gemini, executor, problem, log):
             log(f"  [informal_reason] {inference_step.verification_target.informal_reason}")
 
         # Phase 4: Verify
+        router.set_prior_code([step.action for step in session.steps])
         t0 = time.time()
-        result = router.verify(inference_step.verification_target)
+        result = router.verify(
+            inference_step.verification_target,
+            problem_text=problem["text"],
+            observation=observation,
+            result_variable=result_variable,
+            step_number=step_num,
+            conclusion=inference_step.conclusion,
+            depends_on=depends_on,
+            prior_observations=[step.observation for step in session.steps],
+        )
         ver_elapsed = time.time() - t0
 
         vtype_key = inference_step.verification_target.type.value

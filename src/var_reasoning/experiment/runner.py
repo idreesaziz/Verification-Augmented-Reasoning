@@ -205,7 +205,7 @@ class ExperimentRunner:
     ) -> None:
         gemini = GeminiProvider(model_name="gemini-2.5-flash")
         executor = CodeExecutor()
-        router = VerificationRouter(executor)
+        router = VerificationRouter(CodeExecutor)
         engine = StepEngine(
             gemini=gemini, executor=executor, router=router
         )

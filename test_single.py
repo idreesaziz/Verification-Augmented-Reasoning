@@ -120,7 +120,7 @@ def main():
     print("Initializing local Python executor (no Docker)...")
     executor = LocalExecutor()
 
-    router = VerificationRouter(executor)
+    router = VerificationRouter(LocalExecutor)
     bt = BacktrackManager()
 
     session = Session(problem_id="test_001", problem_text=PROBLEM)
@@ -249,6 +249,7 @@ def main():
             print(f"     {line}")
 
         # Phase 4: Verify
+        router.set_prior_code([step.action for step in session.steps])
         print(f"\n[VERIFY] Running verification...")
         result = router.verify(inference_step.verification_target)
         vtype = inference_step.verification_target.type.value

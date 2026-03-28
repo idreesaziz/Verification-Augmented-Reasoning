@@ -135,7 +135,7 @@ def run():
 
     gemini = GeminiProvider()
     executor = LocalExecutor()
-    router = VerificationRouter(executor)
+    router = VerificationRouter(LocalExecutor, gemini=gemini)
     bt = BacktrackManager(
         code_retries=3,
         inference_retries=5,
@@ -263,11 +263,20 @@ def run():
         log(f"  [vtype] {inference_step.verification_target.type.value}")
         log(f"  [verification_code] {inference_step.verification_target.statement[:200]}")
 
-        # Phase 4: Verify (with pattern-vtype enforcement + tautology check)
+        # Phase 4: Verify (multi-layer pipeline)
+        router.set_prior_code([step.action for step in session.steps])
         t0 = time.time()
+        prior_obs = [step.observation for step in session.steps]
         result = router.verify(
             inference_step.verification_target,
             inference_step.reasoning_pattern,
+            problem_text=session.problem_text,
+            observation=observation,
+            result_variable=result_variable,
+            step_number=len(session.steps) + 1,
+            conclusion=inference_step.conclusion,
+            depends_on=depends_on,
+            prior_observations=prior_obs,
         )
         ver_elapsed = time.time() - t0
 
@@ -363,8 +372,16 @@ def run():
                     session.total_input_tokens += inf2_usage.input_tokens
                     session.total_output_tokens += inf2_usage.output_tokens
 
+                    router.set_prior_code([step.action for step in session.steps])
                     res2 = router.verify(
-                        inf2.verification_target, inf2.reasoning_pattern
+                        inf2.verification_target, inf2.reasoning_pattern,
+                        problem_text=session.problem_text,
+                        observation=new_obs,
+                        result_variable=result_variable,
+                        step_number=len(session.steps) + 1,
+                        conclusion=inf2.conclusion,
+                        depends_on=depends_on,
+                        prior_observations=[s.observation for s in session.steps],
                     )
                     vk2 = inf2.verification_target.type.value
                     session.verification_type_counts[vk2] = (
@@ -436,7 +453,17 @@ def run():
                         if revision.revised_reasoning_pattern
                         else current_pattern
                     )
-                    res2 = router.verify(target, ReasoningPattern(rp))
+                    router.set_prior_code([step.action for step in session.steps])
+                    res2 = router.verify(
+                        target, ReasoningPattern(rp),
+                        problem_text=session.problem_text,
+                        observation=observation,
+                        result_variable=result_variable,
+                        step_number=len(session.steps) + 1,
+                        conclusion=rev_conclusion,
+                        depends_on=depends_on,
+                        prior_observations=[s.observation for s in session.steps],
+                    )
                     vk2 = target.type.value
                     session.verification_type_counts[vk2] = (
                         session.verification_type_counts.get(vk2, 0) + 1

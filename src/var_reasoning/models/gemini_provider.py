@@ -14,6 +14,7 @@ from var_reasoning.models.schemas import (
     CodeFix,
     InferenceRevision,
     InferenceStep,
+    SimulationCode,
     StepOutput,
 )
 
@@ -149,3 +150,26 @@ class GeminiProvider:
         usage = self._track_usage(response)
         text = response.text or ""
         return text, usage
+
+    def generate_simulation(
+        self, system_prompt: str, context: str
+    ) -> tuple[SimulationCode, TokenUsage]:
+        """Generate simulation code via a firewalled LLM call.
+
+        This call is deliberately isolated: it receives only the problem
+        statement and the claim to test, never the reasoning chain.
+        """
+        response = self._call(
+            model=self.model_name,
+            contents=context,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.4,  # Slightly higher for diverse simulations
+                response_mime_type="application/json",
+                response_schema=SimulationCode,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
+            ),
+        )
+        usage = self._track_usage(response)
+        return response.parsed, usage

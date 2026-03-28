@@ -42,6 +42,36 @@ class StepEngine:
         self._router = router
         self._bt = backtrack_manager or BacktrackManager()
 
+    def _sync_verification_namespace(self, session: Session) -> None:
+        """Set the verification executor to only have prior steps' code."""
+        prior_code = [step.action for step in session.steps]
+        self._router.set_prior_code(prior_code)
+
+    def _verify_with_context(
+        self,
+        session: Session,
+        target,
+        reasoning_pattern,
+        observation: str,
+        result_variable: str,
+        conclusion: str,
+        step_number: int,
+        depends_on: list[str],
+    ) -> VerificationResult:
+        """Call router.verify with full pipeline context."""
+        prior_obs = [s.observation for s in session.steps]
+        return self._router.verify(
+            target,
+            reasoning_pattern,
+            problem_text=session.problem_text,
+            observation=observation,
+            result_variable=result_variable,
+            step_number=step_number,
+            conclusion=conclusion,
+            depends_on=depends_on,
+            prior_observations=prior_obs,
+        )
+
     def _track_call(self, session: Session, usage) -> None:
         session.total_llm_calls += 1
         session.total_input_tokens += usage.input_tokens
@@ -149,8 +179,11 @@ class StepEngine:
                     INFERENCE_PROMPT, ctx
                 )
                 self._track_call(session, inf_usage)
-                result = self._router.verify(
-                    inf_step.verification_target, inf_step.reasoning_pattern
+                self._sync_verification_namespace(session)
+                result = self._verify_with_context(
+                    session, inf_step.verification_target, inf_step.reasoning_pattern,
+                    new_obs, result_variable, inf_step.conclusion,
+                    len(session.steps) + 1, depends_on,
                 )
                 self._track_inference(session, inf_step)
                 if result.passed or inf_step.verification_target.type == VerificationType.INFORMAL:
@@ -202,8 +235,11 @@ class StepEngine:
                     else current_pattern
                 )
                 target = revision.revised_verification_target
-                result = self._router.verify(
-                    target, ReasoningPattern(current_pattern)
+                self._sync_verification_namespace(session)
+                result = self._verify_with_context(
+                    session, target, ReasoningPattern(current_pattern),
+                    observation, result_variable, current_conclusion,
+                    len(session.steps) + 1, depends_on,
                 )
                 vtype_key = target.type.value
                 session.verification_type_counts[vtype_key] = (
@@ -303,9 +339,16 @@ class StepEngine:
             self._track_call(session, inf_usage)
 
             # Phase 4: Verify
-            result = self._router.verify(
+            self._sync_verification_namespace(session)
+            result = self._verify_with_context(
+                session,
                 inference_step.verification_target,
                 inference_step.reasoning_pattern,
+                observation,
+                result_variable,
+                inference_step.conclusion,
+                len(session.steps) + 1,
+                depends_on,
             )
             self._track_inference(session, inference_step)
 
