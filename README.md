@@ -1,65 +1,113 @@
 # Verification-Augmented Reasoning (VAR)
 
-A research system that improves LLM reasoning through **multi-layer verification**: each analytical claim is independently tested by a firewalled Monte Carlo simulation, with statistical hypothesis testing via e-values delivering anytime-valid rejection guarantees.
+Adversarial empirical falsification of LLM reasoning through **premise provenance tracking** and **information-firewalled verification**. Every intermediate claim is classified by its origin — inherited, computed, or derived — and derived claims are stress-tested by an independent adversarial verifier that generates its own falsification code without seeing the reasoning chain.
+
+## Core Insight
+
+LLM reasoning agents fail not at code execution but at **wrong modeling assumptions** — probabilistic claims asserted without computation, logical leaps stated as fact. Standard verification (assertions, formal proofs, self-consistency) cannot catch these because:
+
+- **Self-authored verification**: The reasoning model writes its own checks and will always find a tautology
+- **Formal methods**: Can prove `C(25,2) = 300` but cannot detect that the model is computing the *wrong quantity*
+- **Neural verifiers**: Score steps opaquely without producing falsifiable evidence
+
+The solution: **premises are typed, and derived premises are independently falsified.**
 
 ## Architecture
 
+### Premise Provenance
+
+Every premise in the reasoning chain has exactly one type:
+
+| Type | Source | Verification | Example |
+|------|--------|-------------|---------|
+| **INHERITED** | Verbatim from problem statement | None needed — axiom | "There are 25 segments" |
+| **COMPUTED** | Printed by executed code in a prior step | None needed — empirical fact | "Intersection probability = 0.4722" |
+| **DERIVED** | Logical deduction from prior premises | **Adversarial falsification** | "Every pair of chords intersects" |
+
+The model does not classify its own premises. The system classifies them by comparing each premise against (a) the problem text and (b) prior step observations. **Everything that isn't INHERITED or COMPUTED is DERIVED, and gets stress-tested.**
+
+### Adversarial Verification Pipeline
+
+DERIVED premises are sent to an independent adversarial verifier behind an **information firewall**:
+
 ```
-Problem ──► Reasoning Step ──► Action Code ──► Observation
-                                                   │
-                                          ┌────────▼────────┐
-                                          │ Generate Inference│
-                                          │ (premises, claim) │
-                                          └────────┬────────┘
-                                                   │
-                              ┌─────────────────────┼─────────────────────┐
-                              ▼                     ▼                     ▼
-                         Layer 0               Layer 0.5              Layer 1
-                     Static Sanity           Symbolic Check      Firewalled Simulation
-                    ┌──────────────┐     ┌──────────────────┐   ┌──────────────────┐
-                    │ Range check  │     │ Assert / SymPy / │   │ Separate LLM call│
-                    │ Integrality  │     │ Z3 verification  │   │ (no chain ctx)   │
-                    │ Provenance   │     │ Tautology gate   │   │ Monte Carlo code │
-                    │ check (AST)  │     │ Pattern-vtype    │   │ Execute isolated │
-                    └──────┬───────┘     │ enforcement      │   │ Parse output     │
-                           │             └────────┬─────────┘   │ E-value test     │
-                           │                      │             └────────┬─────────┘
-                           └──────────────────────┼──────────────────────┘
-                                                  ▼
-                                          Layer 2: Claim Registry
-                                       (global consistency check)
-                                                  │
-                                          ALL PASS ──► Accept step
-                                          ANY FAIL ──► Retry / Backtrack
+  Reasoning Agent                          Adversarial Verifier
+  ─────────────                            ────────────────────
+
+  Step N produces:                         Receives ONLY:
+  ┌─────────────────────┐                  ┌─────────────────────┐
+  │ [INHERITED] 25 segs │──── skip ────    │ Problem statement   │
+  │ [COMPUTED]  0.4722  │──── skip ────    │                     │
+  │ [DERIVED]   "all    │────────────────► │ Bare claim: "all    │
+  │   pairs intersect"  │  FIREWALL        │   pairs intersect"  │
+  └─────────────────────┘   (no reasoning  └──────────┬──────────┘
+                             chain, no code,           │
+                             no prior steps)           ▼
+                                           ┌──────────────────────┐
+                                           │ Choose attack tool:  │
+                                           │                      │
+                                           │ • Z3  → find a       │
+                                           │   counterexample     │
+                                           │                      │
+                                           │ • Monte Carlo → sim  │
+                                           │   the actual process  │
+                                           │   and measure         │
+                                           │                      │
+                                           │ • Brute-force →      │
+                                           │   enumerate all cases │
+                                           └──────────┬──────────┘
+                                                      │
+                                                      ▼
+                                           ┌──────────────────────┐
+                                           │ Sandbox execution    │
+                                           │ → produces a number  │
+                                           └──────────┬──────────┘
+                                                      │
+                                                      ▼
+                                           ┌──────────────────────┐
+                                           │ Statistical test     │
+                                           │ (e-value, exact      │
+                                           │  match, SAT/UNSAT)   │
+                                           │                      │
+                                           │ → REJECT / SURVIVE   │
+                                           └──────────────────────┘
 ```
 
-### Verification Layers
+### Key Properties
 
-| Layer | Name | Purpose | Speed |
-|-------|------|---------|-------|
-| 0 | Static Sanity | Range plausibility, integrality, provenance (AST-based untraced constant detection) | < 1ms |
-| 0.5 | Symbolic | Execute assert/SymPy/Z3 code in isolated namespace; tautology gate; pattern-vtype enforcement | < 5s |
-| 1 | Simulation | **Firewalled** LLM call generates Monte Carlo code that independently estimates the claimed value. E-value hypothesis test compares analytical vs empirical. | ~15s |
-| 2 | Claim Registry | Track all accepted claims; detect contradictions between steps | < 1ms |
+**Information firewall**: The verifier sees the problem + bare claim only. It cannot inherit the reasoner's blind spots because it never sees the reasoning.
+
+**Adversarial framing**: The verifier is prompted to *assume the claim is wrong* and find the hidden assumption that makes it false. It generates falsification code, not confirmation code.
+
+**Dual falsification tools**:
+- **Z3** — for universal/logical claims ("all X satisfy P" → find counterexample)
+- **Monte Carlo** — for stochastic/probabilistic claims ("E[X] = v" → simulate and measure)
+- The verifier chooses whichever tool is most likely to break the claim.
+
+**Model cannot influence verification**: The adversary generates the code. A fixed statistical test makes the accept/reject decision. The reasoning model never touches either.
+
+**Structured outputs everywhere**: All LLM calls use structured output schemas (Pydantic models). Premise types, claim formats, tool choices — all enforced by the schema, not by prompt compliance.
 
 ### E-Value Statistical Engine
 
-The simulation layer uses **e-values** (evidence measures) for hypothesis testing:
+For Monte Carlo falsification, the system uses **e-values** for hypothesis testing:
 
-- **Proportion claims** (probabilities): Likelihood-ratio e-value with MLE alternative
-- **Continuous claims** (expected values): Gaussian likelihood-ratio via CLT
-- **Deterministic claims** (exact counts): Exact match or infinite evidence
+- **Proportion claims**: Likelihood-ratio e-value with MLE alternative
+- **Continuous claims**: Gaussian likelihood-ratio via CLT
+- **Deterministic claims**: Exact match or infinite evidence
 
-Thresholds: `E > 1000` → reject (α ≈ 0.001), `E > 20` → suspect (α ≈ 0.05)
+Thresholds: `E > 1000` → REJECT, `E > 20` → SUSPECT
 
-E-values are **anytime-valid** (stop sampling at any time, guarantee holds) and **composable** (multiply across steps — no Bonferroni correction needed).
+E-values are **anytime-valid** and **composable** (multiply across steps — no Bonferroni needed).
 
-### Information Firewall
+### Failure Modes and Safeguards
 
-The simulation call is deliberately isolated:
-- Receives **only** the problem statement and the specific claim to test
-- Does **not** see the reasoning chain, analytical derivation, or intermediate steps
-- This prevents the simulator from inheriting the reasoner's misconceptions
+| Failure | Mitigation |
+|---------|------------|
+| Simulation timeout | Progressive fallback (50K → 5K → 500 trials). Timeout → BLOCK, never PASS. |
+| False rejection (buggy sim) | High e-value threshold. Convergence check at two sample sizes. Worst case = one retry. |
+| Non-simulatable claim | Reported as INCONCLUSIVE. Z3 may still handle it. Some claims genuinely can't be tested. |
+| Model mislabels premises | Model doesn't classify — the system does, by matching against problem text and prior observations. |
 
 ## Setup
 
@@ -120,25 +168,28 @@ python -m var_reasoning plot --benchmark gsm8k
 | C (full VAR) | Gemini 2.5 Flash | Yes | Yes (multi-layer) | Yes |
 | D (ceiling) | Gemini 2.5 Pro | No | No | No |
 
-## Project Structure
+## Project Structure (Redesign — WIP)
 
 ```
 src/var_reasoning/
-├── engine/           # Core reasoning loop + backtracking
-├── models/           # LLM provider, Pydantic schemas, session state
-├── prompts/          # System prompts (reasoning, inference, simulation)
-├── sandbox/          # Docker-based code executor
-├── verification/     # Multi-layer verification pipeline
-│   ├── static_sanity.py        # Layer 0: AST-based sanity gates
-│   ├── assert_verifier.py      # Layer 0.5: Python assertions
-│   ├── sympy_verifier.py       # Layer 0.5: SymPy symbolic checks
-│   ├── z3_verifier.py          # Layer 0.5: Z3 satisfiability
-│   ├── tautology_check.py      # Layer 0.5: Reject literal-only assertions
-│   ├── simulation_verifier.py  # Layer 1: Firewalled simulation orchestrator
-│   ├── e_value.py              # Layer 1: E-value statistical engine
-│   ├── claim_registry.py       # Layer 2: Global consistency tracking
-│   └── verification_router.py  # Pipeline orchestrator (all layers)
-└── benchmarks/       # Dataset loaders (GSM8K, MATH, FOLIO, HumanEval)
+├── engine/             # Core reasoning loop
+│   ├── step_engine.py          # Step execution + code repair
+│   └── backtracking.py         # Retry / backtrack on rejection
+├── models/             # LLM provider, Pydantic schemas, session state
+│   ├── gemini_provider.py      # Structured output LLM calls
+│   ├── schemas.py              # Enforced schemas for all LLM outputs
+│   └── state.py                # Session, CompletedStep, premise chain
+├── prompts/            # System prompts
+│   ├── reasoning_prompt.py     # Reasoner: compute, don't assume
+│   └── adversary_prompt.py     # Adversarial verifier: assume wrong, falsify
+├── provenance/         # Premise provenance system
+│   ├── classifier.py           # Classify premises: INHERITED / COMPUTED / DERIVED
+│   └── chain.py                # Provenance graph across steps
+├── verification/       # Adversarial falsification engine
+│   ├── adversary.py            # Firewalled adversarial verifier orchestrator
+│   ├── e_value.py              # E-value statistical engine
+│   └── sandbox.py              # Isolated code execution (subprocess)
+└── benchmarks/         # Dataset loaders (GSM8K, MATH, FOLIO, HumanEval)
 ```
 
 ## Benchmarks

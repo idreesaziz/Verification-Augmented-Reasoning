@@ -27,10 +27,12 @@ RULES:
     problem. Do NOT use analytical formulas or shortcuts.
   - The code must be a DIRECT, LITERAL simulation of the problem
     setup. Think of it as: "if I actually performed this experiment
-    millions of times, what would I observe?"
+    thousands of times, what would I observe?"
   - Do NOT reference the claimed value anywhere in your code. The
     simulation must independently produce a number.
-  - Use at least 200,000 trials for Monte Carlo simulations.
+  - Use 50,000 trials. CRITICAL: you MUST use fully vectorised numpy
+    operations (no Python for-loops over trials). A pure-Python loop
+    over 50,000 trials will time out and is not acceptable.
   - At the end, print output in EXACTLY this format:
 
     SIMULATION_RESULT: <number>
@@ -40,10 +42,11 @@ RULES:
   - For probability estimates, also print:
     SUCCESSES: <integer>
 
-  - Use numpy for random number generation (faster than stdlib random).
+  - Use numpy for ALL random number generation and computation.
   - Write plain Python. No markdown fences.
   - Import all libraries you need at the top.
   - The code must be self-contained and runnable as-is.
+  - Budget: your code must finish in under 30 seconds.
 """
 
 

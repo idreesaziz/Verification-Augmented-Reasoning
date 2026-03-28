@@ -173,7 +173,7 @@ class SimulationVerifier:
             # Step 3: Execute in an isolated namespace
             executor = self._executor_factory()
             executor.reset_namespace()
-            success, output = executor.execute(sim_code, timeout=60)
+            success, output = executor.execute(sim_code, timeout=45)
             if not success:
                 logger.info(
                     "Simulation execution failed (attempt %d): %s",

@@ -154,6 +154,10 @@ class VerificationRouter:
             and target.type != VerificationType.INFORMAL
             and problem_text
         ):
+            print(
+                f"  [sim] Firewalled simulation: testing {result_variable or 'result'}={claimed_value:.6g}...",
+                flush=True,
+            )
             sim_result = self._sim_verifier.verify(
                 problem_text=problem_text,
                 claim_conclusion=conclusion or str(claimed_value),
@@ -167,6 +171,13 @@ class VerificationRouter:
                 sim_e = sim_result.e_value
                 sim_empirical = sim_result.empirical_value
                 sim_detail = sim_result.detail
+                print(
+                    f"  [sim] verdict={sim_verdict_str}, empirical={sim_empirical:.6g}, "
+                    f"claimed={claimed_value:.6g}, e={sim_e:.2f}",
+                    flush=True,
+                )
+            else:
+                print("  [sim] inconclusive (generation/execution failed)", flush=True)
 
                 if sim_result.verdict == Verdict.REJECT:
                     return VerificationResult(

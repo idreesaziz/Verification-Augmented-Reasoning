@@ -293,6 +293,10 @@ def run():
             if not inference_step.verification_target.informal_reason:
                 session.informal_without_reason_count += 1
 
+        if result.simulation_ran:
+            emp = f"{result.simulation_empirical:.6g}" if result.simulation_empirical is not None else "n/a"
+            log(f"  [sim] verdict={result.simulation_verdict}, empirical={emp}, e={result.simulation_e_value:.2f}")
+
         if result.passed or inference_step.verification_target.type == VerificationType.INFORMAL:
             status = "PASSED" if result.passed else "INFORMAL_SKIP"
             event("verify_pass", pattern=pat_key, vtype=vtype_key)
