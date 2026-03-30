@@ -1,76 +1,67 @@
-"""Core reasoning loop: the step engine."""
+"""Core reasoning loop — VAR v2.
+
+Architecture: fact-pool + adversarial falsification.
+
+Each step:
+  1. Reasoner produces code + optional derivations
+  2. Code executes → COMPUTED fact added to pool
+  3. Each derivation is independently falsified by the adversary
+  4. Survived derivations → DERIVED facts added to pool
+  5. Rejected derivation → step discarded, backtrack
+
+No inference layer. No model-authored verification.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
 
 from var_reasoning.engine.backtracking import BacktrackManager
 from var_reasoning.engine.feedback import (
     build_conversation_history,
-    build_inference_context,
+    build_rejection_feedback,
     make_code_repair_prompt,
-    make_inference_retry_prompt,
 )
 from var_reasoning.models.gemini_provider import GeminiProvider
-from var_reasoning.models.schemas import ReasoningPattern, VerificationType
-from var_reasoning.models.state import (
-    CompletedStep,
-    Session,
-    VerificationResult,
-    build_inference_string,
-)
-from var_reasoning.prompts.inference_prompt import INFERENCE_PROMPT
+from var_reasoning.models.schemas import Verdict
+from var_reasoning.models.state import CompletedStep, FalsificationResult, Session
 from var_reasoning.prompts.reasoning_prompt import REASONING_PROMPT
-from var_reasoning.sandbox.executor import CodeExecutor
-from var_reasoning.verification.verification_router import VerificationRouter
+from var_reasoning.verification.adversary import falsify_derivation
 
 logger = logging.getLogger(__name__)
 
 
+def _try_parse_float(s: str) -> float | None:
+    """Try to extract a float from code output."""
+    s = s.strip()
+    # Try direct parse
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    # Try to find a number in the output
+    m = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", s)
+    if m:
+        try:
+            return float(m.group())
+        except ValueError:
+            pass
+    return None
+
+
 class StepEngine:
-    """Runs the VAR reasoning loop on a single problem."""
+    """Runs the VAR v2 reasoning loop on a single problem."""
 
     def __init__(
         self,
         gemini: GeminiProvider,
-        executor: CodeExecutor,
-        router: VerificationRouter,
+        executor,  # anything with .execute(code) -> (bool, str) and .reset_namespace()
         backtrack_manager: BacktrackManager | None = None,
     ) -> None:
         self._gemini = gemini
         self._executor = executor
-        self._router = router
         self._bt = backtrack_manager or BacktrackManager()
-
-    def _sync_verification_namespace(self, session: Session) -> None:
-        """Set the verification executor to only have prior steps' code."""
-        prior_code = [step.action for step in session.steps]
-        self._router.set_prior_code(prior_code)
-
-    def _verify_with_context(
-        self,
-        session: Session,
-        target,
-        reasoning_pattern,
-        observation: str,
-        result_variable: str,
-        conclusion: str,
-        step_number: int,
-        depends_on: list[str],
-    ) -> VerificationResult:
-        """Call router.verify with full pipeline context."""
-        prior_obs = [s.observation for s in session.steps]
-        return self._router.verify(
-            target,
-            reasoning_pattern,
-            problem_text=session.problem_text,
-            observation=observation,
-            result_variable=result_variable,
-            step_number=step_number,
-            conclusion=conclusion,
-            depends_on=depends_on,
-            prior_observations=prior_obs,
-        )
 
     def _track_call(self, session: Session, usage) -> None:
         session.total_llm_calls += 1
@@ -83,7 +74,7 @@ class StepEngine:
         thought: str,
         session: Session,
     ) -> tuple[bool, str]:
-        """Execute code with silent repair loop (Mode A)."""
+        """Execute code with silent repair loop."""
         success, output = self._executor.execute(code)
         if success:
             return True, output
@@ -110,192 +101,24 @@ class StepEngine:
 
         return False, current_error
 
-    def _track_inference(self, session: Session, inf_step) -> None:
-        """Update session counters for a new inference step."""
-        vtype_key = inf_step.verification_target.type.value
-        session.verification_type_counts[vtype_key] = (
-            session.verification_type_counts.get(vtype_key, 0) + 1
-        )
-        pattern_key = inf_step.reasoning_pattern.value
-        session.reasoning_pattern_counts[pattern_key] = (
-            session.reasoning_pattern_counts.get(pattern_key, 0) + 1
-        )
-        if inf_step.verification_target.type == VerificationType.INFORMAL:
-            session.informal_skip_count += 1
-            if not inf_step.verification_target.informal_reason:
-                session.informal_without_reason_count += 1
-
-    def _retry_inference(
-        self,
-        session: Session,
-        objective: str,
-        depends_on: list[str],
-        thought: str,
-        action: str,
-        observation: str,
-        result_variable: str,
-        premises: list[str],
-        conclusion: str,
-        reasoning_pattern: str,
-        verification_type: str,
-        failure_details: str,
-    ) -> CompletedStep | None:
-        """Inference retry loop (Mode B). Returns completed step or None."""
-        prior_attempts: list[tuple[str, str, str]] = []
-        current_premises = premises
-        current_conclusion = conclusion
-        current_pattern = reasoning_pattern
-        current_vtype = verification_type
-        current_failure = failure_details
-
-        for _ in range(self._bt.inference_retries):
-            session.total_inference_retries += 1
-            prompt = make_inference_retry_prompt(
-                session,
-                observation,
-                current_premises,
-                current_conclusion,
-                current_pattern,
-                current_vtype,
-                current_failure,
-                prior_attempts,
-            )
-            revision, usage = self._gemini.generate_inference_revision(prompt)
-            self._track_call(session, usage)
-
-            if revision.choice == "investigate" and revision.thought and revision.action:
-                # LLM wants to run new code instead of revising
-                success, new_obs = self._execute_with_repair(
-                    revision.action, revision.thought, session
-                )
-                if not success:
-                    continue
-                # Generate new inference for the new observation
-                ctx = build_inference_context(
-                    session, revision.thought, revision.action, new_obs,
-                    objective=objective, result_variable=result_variable,
-                )
-                inf_step, inf_usage = self._gemini.generate_inference(
-                    INFERENCE_PROMPT, ctx
-                )
-                self._track_call(session, inf_usage)
-                self._sync_verification_namespace(session)
-                result = self._verify_with_context(
-                    session, inf_step.verification_target, inf_step.reasoning_pattern,
-                    new_obs, result_variable, inf_step.conclusion,
-                    len(session.steps) + 1, depends_on,
-                )
-                self._track_inference(session, inf_step)
-                if result.passed or inf_step.verification_target.type == VerificationType.INFORMAL:
-                    self._bt.reset_cascade_counter()
-                    return CompletedStep(
-                        step_number=len(session.steps) + 1,
-                        objective=objective,
-                        depends_on=depends_on,
-                        thought=revision.thought,
-                        action=revision.action,
-                        observation=new_obs,
-                        result_variable=result_variable,
-                        premises=inf_step.premises,
-                        conclusion=inf_step.conclusion,
-                        reasoning_pattern=inf_step.reasoning_pattern,
-                        inference=build_inference_string(
-                            inf_step.premises, inf_step.conclusion
-                        ),
-                        verification_target=inf_step.verification_target,
-                        verification_result=result,
-                    )
-                current_premises = inf_step.premises
-                current_conclusion = inf_step.conclusion
-                current_pattern = inf_step.reasoning_pattern.value
-                current_vtype = inf_step.verification_target.type.value
-                current_failure = result.error_message or "Verification failed"
-                inf_str = build_inference_string(
-                    inf_step.premises, inf_step.conclusion
-                )
-                prior_attempts.append(
-                    (inf_str, current_vtype, current_failure)
-                )
-            elif (
-                revision.choice == "revise"
-                and revision.revised_conclusion
-                and revision.revised_verification_target
-            ):
-                inf_str = build_inference_string(
-                    current_premises, current_conclusion
-                )
-                prior_attempts.append(
-                    (inf_str, current_vtype, current_failure)
-                )
-                current_premises = revision.revised_premises or current_premises
-                current_conclusion = revision.revised_conclusion
-                current_pattern = (
-                    revision.revised_reasoning_pattern.value
-                    if revision.revised_reasoning_pattern
-                    else current_pattern
-                )
-                target = revision.revised_verification_target
-                self._sync_verification_namespace(session)
-                result = self._verify_with_context(
-                    session, target, ReasoningPattern(current_pattern),
-                    observation, result_variable, current_conclusion,
-                    len(session.steps) + 1, depends_on,
-                )
-                vtype_key = target.type.value
-                session.verification_type_counts[vtype_key] = (
-                    session.verification_type_counts.get(vtype_key, 0) + 1
-                )
-                rp = current_pattern
-                session.reasoning_pattern_counts[rp] = (
-                    session.reasoning_pattern_counts.get(rp, 0) + 1
-                )
-                if target.type == VerificationType.INFORMAL:
-                    session.informal_skip_count += 1
-                    if not target.informal_reason:
-                        session.informal_without_reason_count += 1
-                if result.passed or target.type == VerificationType.INFORMAL:
-                    self._bt.reset_cascade_counter()
-                    return CompletedStep(
-                        step_number=len(session.steps) + 1,
-                        objective=objective,
-                        depends_on=depends_on,
-                        thought=thought,
-                        action=action,
-                        observation=observation,
-                        result_variable=result_variable,
-                        premises=current_premises,
-                        conclusion=current_conclusion,
-                        reasoning_pattern=ReasoningPattern(current_pattern),
-                        inference=build_inference_string(
-                            current_premises, current_conclusion
-                        ),
-                        verification_target=target,
-                        verification_result=result,
-                    )
-                current_vtype = target.type.value
-                current_failure = result.error_message or "Verification failed"
-            else:
-                # Invalid revision — count it and continue
-                inf_str = build_inference_string(
-                    current_premises, current_conclusion
-                )
-                prior_attempts.append(
-                    (inf_str, current_vtype, current_failure)
-                )
-
-        return None
-
     def solve(self, problem_id: str, problem_text: str) -> Session:
-        """Run the full VAR loop on a problem."""
+        """Run the full VAR v2 loop on a problem."""
         session = Session(problem_id=problem_id, problem_text=problem_text)
         self._executor.reset_namespace()
         self._gemini.reset_usage()
 
+        # Rejection feedback carried across retries of the same logical point
+        rejection_feedback: str | None = None
+
         while not self._bt.should_stop(session):
-            # Phase 1: Generate reasoning step (retry on empty/malformed)
+            step_number = len(session.steps) + 1
+
+            # ── Phase 1: Generate reasoning step ────────────────────
             step_output = None
             for _attempt in range(3):
                 conversation = build_conversation_history(session)
+                if rejection_feedback:
+                    conversation.append(rejection_feedback)
                 raw_output, usage = self._gemini.generate_reasoning_step(
                     REASONING_PROMPT, conversation
                 )
@@ -303,196 +126,198 @@ class StepEngine:
                 if raw_output and (raw_output.final_answer or raw_output.reasoning):
                     step_output = raw_output
                     break
+
             if step_output is None:
-                # All retries failed — backtrack
                 self._bt.handle_code_failure(session)
+                rejection_feedback = None
                 continue
 
-            # Check for final answer
+            # ── Check for final answer ──────────────────────────────
             if step_output.final_answer:
                 session.final_answer = step_output.final_answer.answer
-                session.justification = step_output.final_answer.justification
+                session.fact_chain = step_output.final_answer.fact_chain
+                # Compute compound confidence over the fact chain
+                session.compound_confidence = session.fact_pool.compound_confidence(
+                    step_output.final_answer.fact_chain
+                )
                 break
 
-            objective = step_output.reasoning.objective
-            depends_on = step_output.reasoning.depends_on
-            thought = step_output.reasoning.thought
-            action = step_output.reasoning.action
-            result_variable = step_output.reasoning.result_variable
+            reasoning = step_output.reasoning
 
-            # Phase 2: Execute code (with silent repair loop)
+            # ── Phase 2: Execute code ───────────────────────────────
             success, observation = self._execute_with_repair(
-                action, thought, session
+                reasoning.action, reasoning.thought, session
             )
             if not success:
+                logger.warning(
+                    "Step %d code failed after retries: %s",
+                    step_number,
+                    observation[:200],
+                )
                 self._bt.handle_code_failure(session)
+                rejection_feedback = None
                 continue
 
-            # Phase 3: Generate inference + verification target
-            ctx = build_inference_context(
-                session, thought, action, observation,
-                objective=objective, result_variable=result_variable,
+            # ── Phase 3: Add COMPUTED fact ──────────────────────────
+            parsed_value = _try_parse_float(observation)
+            computed_fact = session.fact_pool.add_computed(
+                statement=f"{reasoning.result_variable} = {observation.strip()[:200]}",
+                value=parsed_value,
+                step=step_number,
             )
-            inference_step, inf_usage = self._gemini.generate_inference(
-                INFERENCE_PROMPT, ctx
-            )
-            self._track_call(session, inf_usage)
 
-            # Phase 4: Verify
-            self._sync_verification_namespace(session)
-            result = self._verify_with_context(
-                session,
-                inference_step.verification_target,
-                inference_step.reasoning_pattern,
-                observation,
-                result_variable,
-                inference_step.conclusion,
-                len(session.steps) + 1,
-                depends_on,
+            logger.info(
+                "Step %d: %s → %s (COMPUTED: %s)",
+                step_number,
+                reasoning.objective,
+                observation.strip()[:80],
+                computed_fact.id,
             )
-            self._track_inference(session, inference_step)
 
-            if result.passed or inference_step.verification_target.type == VerificationType.INFORMAL:
-                # Step accepted
-                self._bt.reset_cascade_counter()
-                session.steps.append(
-                    CompletedStep(
-                        step_number=len(session.steps) + 1,
-                        objective=objective,
-                        depends_on=depends_on,
-                        thought=thought,
-                        action=action,
-                        observation=observation,
-                        result_variable=result_variable,
-                        premises=inference_step.premises,
-                        conclusion=inference_step.conclusion,
-                        reasoning_pattern=inference_step.reasoning_pattern,
-                        inference=build_inference_string(
-                            inference_step.premises, inference_step.conclusion
-                        ),
-                        verification_target=inference_step.verification_target,
-                        verification_result=result,
+            # ── Phase 4: Falsify derivations ────────────────────────
+            all_survived = True
+            falsification_results: list[FalsificationResult] = []
+            rejected_feedback = None
+
+            for derivation in reasoning.derivations:
+                # Auto-fill claimed_value from computed result if missing
+                if derivation.claimed_value is None and parsed_value is not None:
+                    derivation.claimed_value = parsed_value
+
+                logger.info(
+                    "  Falsifying: %s (claimed=%s)",
+                    derivation.premise[:80],
+                    derivation.claimed_value,
+                )
+
+                result, adv_usage = falsify_derivation(
+                    derivation=derivation,
+                    problem_text=session.problem_text,
+                    fact_pool=session.fact_pool,
+                    provider=self._gemini,
+                )
+                self._track_call(session, adv_usage)
+                session.total_adversary_calls += 1
+                session.total_falsifications += 1
+                falsification_results.append(result)
+
+                logger.info(
+                    "    Verdict: %s (e=%.2f) %s",
+                    result.verdict.value,
+                    result.e_value,
+                    result.feedback[:100] if result.feedback else "",
+                )
+
+                if result.verdict == Verdict.REJECT:
+                    all_survived = False
+                    session.total_rejections += 1
+                    rejected_feedback = build_rejection_feedback(
+                        derivation, result
                     )
-                )
-            else:
-                # Inference retry loop (Mode B)
-                failure_details = result.error_message or "Verification failed"
-                if result.counterexample:
-                    failure_details += f"\nCounterexample: {result.counterexample}"
+                    break
 
-                vtype_key = inference_step.verification_target.type.value
-                revised = self._retry_inference(
-                    session,
-                    objective,
-                    depends_on,
-                    thought,
-                    action,
-                    observation,
-                    result_variable,
-                    inference_step.premises,
-                    inference_step.conclusion,
-                    inference_step.reasoning_pattern.value,
-                    vtype_key,
-                    failure_details,
-                )
-                if revised:
-                    session.steps.append(revised)
-                else:
-                    # Mode C: cascade backtrack
-                    restart = self._bt.handle_inference_failure(session)
-                    if restart:
-                        self._executor.reset_namespace()
-                        logger.info(
-                            "Cascade limit reached for %s. Restarting.",
-                            problem_id,
+                # Auto cross-check: if the derivation's claimed_value
+                # equals the step's parsed_value (meaning the derivation
+                # IS about the step's main output) and the adversary's
+                # empirical disagrees with both, reject.
+                # Also check when derivation claimed_value differs from
+                # parsed_value — then compare empirical to claimed_value
+                # only when verdict was INCONCLUSIVE (adversary couldn't
+                # do the e-value test itself).
+                if (
+                    result.empirical_value is not None
+                    and parsed_value is not None
+                    and derivation.claimed_value is not None
+                ):
+                    # Compare empirical to the derivation's claimed value
+                    cv = derivation.claimed_value
+                    rel_err = abs(result.empirical_value - cv) / max(abs(cv), 1e-12)
+                    # Only cross-check reject on large discrepancies
+                    # This catches the case where e-value test said SURVIVE
+                    # but the simulation clearly disagrees with the claim
+                    if rel_err > 0.10 and result.verdict != Verdict.REJECT:
+                        logger.warning(
+                            "    Auto cross-check REJECT: claimed=%.6f vs empirical=%.6f (%.1f%% off)",
+                            cv, result.empirical_value, rel_err * 100,
                         )
+                        result.verdict = Verdict.REJECT
+                        result.e_value = float("inf")
+                        result.feedback = (
+                            f"Cross-check: derivation claimed {cv} but simulation found "
+                            f"{result.empirical_value:.6f} ({rel_err*100:.1f}% discrepancy)"
+                        )
+                        all_survived = False
+                        session.total_rejections += 1
+                        rejected_feedback = build_rejection_feedback(
+                            derivation, result
+                        )
+                        break
+
+            if not all_survived:
+                # Derivation rejected — backtrack
+                logger.warning(
+                    "Step %d: derivation rejected. Backtracking.",
+                    step_number,
+                )
+                # Remove the computed fact we just added (it's from rejected step)
+                session.fact_pool.facts.pop(computed_fact.id, None)
+                session.fact_pool._computed_counter -= 1
+
+                restart = self._bt.handle_inference_failure(session)
+                if restart:
+                    self._executor.reset_namespace()
+                    rejection_feedback = None
+                    logger.info("Cascade limit — restarting from scratch.")
+                else:
+                    # Carry rejection feedback so the model knows what went wrong
+                    rejection_feedback = rejected_feedback
+                    session.total_step_retries += 1
+                continue
+
+            # ── Phase 5: All derivations survived — add DERIVED facts
+            derived_fact_ids: list[str] = []
+            for i, derivation in enumerate(reasoning.derivations):
+                fr = falsification_results[i]
+                # Confidence mapping:
+                #   SURVIVE + executed → high confidence (use e_value, min 20)
+                #   INCONCLUSIVE      → moderate confidence (e_value=5)
+                #   not executed       → moderate (e_value=5)
+                if fr.verdict == Verdict.SURVIVE and fr.executed:
+                    e_val = max(fr.e_value, 20.0)
+                elif fr.verdict == Verdict.INCONCLUSIVE or not fr.executed:
+                    e_val = 5.0
+                else:
+                    e_val = fr.e_value
+                fact = session.fact_pool.add_derived(
+                    statement=derivation.premise,
+                    value=derivation.claimed_value,
+                    step=step_number,
+                    depends_on=derivation.depends_on,
+                    e_value=e_val,
+                )
+                derived_fact_ids.append(fact.id)
+                logger.info("  Derived fact added: %s (conf=%.4f)", fact.id, fact.confidence)
+
+            # ── Phase 6: Record completed step ──────────────────────
+            session.steps.append(
+                CompletedStep(
+                    step_number=step_number,
+                    objective=reasoning.objective,
+                    facts_used=reasoning.facts_used,
+                    thought=reasoning.thought,
+                    action=reasoning.action,
+                    observation=observation,
+                    result_variable=reasoning.result_variable,
+                    derivations=reasoning.derivations,
+                    falsification_results=falsification_results,
+                    computed_fact_ids=[computed_fact.id],
+                    derived_fact_ids=derived_fact_ids,
+                )
+            )
+            self._bt.reset_cascade_counter()
+            rejection_feedback = None  # Clear any prior rejection
 
         if self._bt.is_unsolvable(session) and session.final_answer is None:
             session.final_answer = "UNSOLVABLE"
-            session.justification = "Exceeded backtrack limits."
-
-        return session
-
-
-class ConditionBEngine:
-    """Condition B: code execution + reasoning loop, NO verification."""
-
-    def __init__(
-        self,
-        gemini: GeminiProvider,
-        executor: CodeExecutor,
-    ) -> None:
-        self._gemini = gemini
-        self._executor = executor
-        self._max_steps = 25
-
-    def _track_call(self, session: Session, usage) -> None:
-        session.total_llm_calls += 1
-        session.total_input_tokens += usage.input_tokens
-        session.total_output_tokens += usage.output_tokens
-
-    def solve(self, problem_id: str, problem_text: str) -> Session:
-        session = Session(problem_id=problem_id, problem_text=problem_text)
-        self._executor.reset_namespace()
-        self._gemini.reset_usage()
-
-        for _ in range(self._max_steps):
-            conversation = build_conversation_history(session)
-            step_output, usage = self._gemini.generate_reasoning_step(
-                REASONING_PROMPT, conversation
-            )
-            self._track_call(session, usage)
-
-            if step_output.final_answer:
-                session.final_answer = step_output.final_answer.answer
-                session.justification = step_output.final_answer.justification
-                break
-
-            if not step_output.reasoning:
-                continue
-
-            objective = step_output.reasoning.objective
-            depends_on = step_output.reasoning.depends_on
-            thought = step_output.reasoning.thought
-            action = step_output.reasoning.action
-            result_variable = step_output.reasoning.result_variable
-
-            success, observation = self._executor.execute(action)
-            if not success:
-                observation = f"[Code error]: {observation}"
-
-            # Generate inference (no verification)
-            ctx = build_inference_context(
-                session, thought, action, observation,
-                objective=objective, result_variable=result_variable,
-            )
-            inference_step, inf_usage = self._gemini.generate_inference(
-                INFERENCE_PROMPT, ctx
-            )
-            self._track_call(session, inf_usage)
-
-            # Accept every inference without verification
-            session.steps.append(
-                CompletedStep(
-                    step_number=len(session.steps) + 1,
-                    objective=objective,
-                    depends_on=depends_on,
-                    thought=thought,
-                    action=action,
-                    observation=observation,
-                    result_variable=result_variable,
-                    premises=inference_step.premises,
-                    conclusion=inference_step.conclusion,
-                    reasoning_pattern=inference_step.reasoning_pattern,
-                    inference=build_inference_string(
-                        inference_step.premises, inference_step.conclusion
-                    ),
-                    verification_target=inference_step.verification_target,
-                    verification_result=VerificationResult(
-                        passed=True,
-                        verification_type=inference_step.verification_target.type,
-                    ),
-                )
-            )
 
         return session

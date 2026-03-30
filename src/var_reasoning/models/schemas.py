@@ -1,4 +1,7 @@
-"""Pydantic schemas for LLM structured output."""
+"""Pydantic schemas for LLM structured output.
+
+VAR v2 architecture — premise provenance + adversarial falsification.
+"""
 
 from __future__ import annotations
 
@@ -8,75 +11,107 @@ from typing import Literal, Optional
 from pydantic import BaseModel
 
 
-class VerificationType(str, Enum):
-    Z3 = "z3"
-    SYMPY = "sympy"
-    PYTHON_ASSERT = "python_assert"
-    INFORMAL = "informal"
+# ── Enums ────────────────────────────────────────────────────────────
 
 
-class ReasoningPattern(str, Enum):
-    EXHAUSTIVE_ENUMERATION = "exhaustive_enumeration"
-    PRODUCT_RULE = "product_rule"
-    UNIVERSAL_CLAIM = "universal_claim"
-    EXISTENTIAL = "existential"
-    ALGEBRAIC = "algebraic"
-    CASE_ANALYSIS = "case_analysis"
+class FactType(str, Enum):
+    """How a fact entered the reasoning chain."""
+
+    GIVEN = "given"  # Verbatim from problem statement
+    COMPUTED = "computed"  # Printed by executed code
+    DERIVED = "derived"  # Logical deduction — must be stress-tested
 
 
-class VerificationTarget(BaseModel):
-    type: VerificationType
-    statement: str  # The actual Z3/SymPy/assert code to execute
-    # Required when type == informal; soft-enforced (missing increments counter)
-    informal_reason: Optional[str] = None
+class ClaimType(str, Enum):
+    """What kind of claim a derivation makes."""
+
+    UNIVERSAL = "universal"  # "for all X, P holds"
+    EXISTENTIAL = "existential"  # "there exists X such that..."
+    EXPECTED_VALUE = "expected_value"  # "E[X] = v"
+    PROBABILITY = "probability"  # "P(event) = p"
+    DETERMINISTIC_COUNT = "deterministic_count"  # "the number of X is N"
+    IDENTITY = "identity"  # "expression A = expression B"
+
+
+class AttackTool(str, Enum):
+    """Which tool the adversary uses to falsify a claim."""
+
+    Z3 = "z3"  # Constraint solver — find counterexample
+    MONTE_CARLO = "monte_carlo"  # Simulation — estimate empirically
+    BRUTE_FORCE = "brute_force"  # Enumerate all cases
+
+
+class Verdict(str, Enum):
+    """Outcome of adversarial falsification."""
+
+    REJECT = "reject"  # Strong evidence claim is wrong
+    SURVIVE = "survive"  # No evidence against — claim stands
+    INCONCLUSIVE = "inconclusive"  # Couldn't run or interpret
+
+
+# ── Reasoner schemas ─────────────────────────────────────────────────
+
+
+class Derivation(BaseModel):
+    """A single logical claim made by the reasoner."""
+
+    premise: str  # Formal: "P(two cross-quadrant chords intersect) = 1"
+    justification: str  # WHY: "Since both chords must cross the center region..."
+    depends_on: list[str]  # Fact IDs this derives from: ["given_1", "computed_3"]
+    claimed_value: Optional[float] = None  # Numeric value if applicable
 
 
 class ReasoningStep(BaseModel):
+    """What the reasoner produces each step."""
+
     objective: str  # The ONE question this step answers
-    depends_on: list[str]  # result_variable names from prior steps this reads
-    thought: str  # Why this is the right next thing to do
-    action: str  # Python code that computes the answer
-    result_variable: str  # The ONE variable assigned and printed by the action
-
-
-class InferenceStep(BaseModel):
-    premises: list[str]  # Discrete factual claims from the observation
-    conclusion: str  # The single claim being drawn from the premises
-    reasoning_pattern: ReasoningPattern  # Strict: enum enforced by schema mode
-    verification_target: VerificationTarget
+    facts_used: list[str]  # Fact IDs from the pool this step reads
+    thought: str  # Planning — not graded
+    action: str  # Python code to execute
+    result_variable: str  # Variable printed by the code
+    derivations: list[Derivation] = []  # Logical claims (can be empty for pure computation)
 
 
 class FinalAnswer(BaseModel):
+    """End of reasoning."""
+
     answer: str
-    justification: str  # Must reference specific step numbers
+    fact_chain: list[str]  # Ordered fact IDs tracing from givens to answer
 
 
 class StepOutput(BaseModel):
-    """LLM returns exactly one of these three."""
+    """LLM returns exactly one of these."""
 
     reasoning: Optional[ReasoningStep] = None
     final_answer: Optional[FinalAnswer] = None
 
 
 class CodeFix(BaseModel):
+    """Code repair output."""
+
     fixed_code: str
     explanation: str
 
 
-class InferenceRevision(BaseModel):
+# ── Adversary schemas ────────────────────────────────────────────────
+
+
+class FalsificationAttempt(BaseModel):
+    """What the adversarial verifier produces."""
+
+    claim_type: ClaimType
+    hidden_assumptions: list[str]  # What unstated assumptions does this rest on?
+    attack_tool: AttackTool
+    attack_rationale: str  # One sentence: why this tool, what it targets
+    code: str  # Executable falsification code
+
+
+class StepRevision(BaseModel):
+    """What the reasoner produces when a derivation is rejected."""
+
     choice: Literal["revise", "investigate"]
-    # For choice == "revise": provide all three structured fields
-    revised_premises: Optional[list[str]] = None
-    revised_conclusion: Optional[str] = None
-    revised_reasoning_pattern: Optional[ReasoningPattern] = None
-    revised_verification_target: Optional[VerificationTarget] = None
-    # For choice == "investigate": provide thought + action
+    # For revise: new derivations for the same step
+    revised_derivations: Optional[list[Derivation]] = None
+    # For investigate: run new code
     thought: Optional[str] = None
     action: Optional[str] = None
-
-
-class SimulationCode(BaseModel):
-    """Output schema for the firewalled simulation LLM call."""
-
-    code: str  # Self-contained Python code that runs the simulation
-    description: str  # Brief description of what the simulation does

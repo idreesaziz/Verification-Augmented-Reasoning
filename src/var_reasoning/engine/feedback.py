@@ -1,82 +1,77 @@
-"""Feedback builders for the engine's retry loops."""
+"""Feedback builders for the v2 engine.
+
+Builds conversation history from the fact pool and completed steps.
+"""
 
 from __future__ import annotations
 
-from var_reasoning.models.state import CompletedStep, Session
+from var_reasoning.models.schemas import Derivation, Verdict
+from var_reasoning.models.state import CompletedStep, FalsificationResult, Session
 from var_reasoning.prompts.code_repair_prompt import build_code_repair_prompt
-from var_reasoning.prompts.inference_retry_prompt import build_inference_retry_prompt
 
 
 def build_conversation_history(session: Session) -> list[str]:
-    """Build the conversation history for the reasoning LLM call."""
+    """Build conversation for the reasoning LLM call.
+
+    Includes the problem, the current fact pool, and a summary of
+    each completed step (objective, observation, accepted derivations).
+    """
     parts: list[str] = [f"Problem:\n{session.problem_text}"]
+
+    # Fact pool
+    pool_str = session.fact_pool.render_for_reasoner()
+    parts.append(f"FACT POOL:\n{pool_str}")
+
+    # Prior steps
     for step in session.steps:
-        premises_str = "; ".join(step.premises) if step.premises else "(none)"
-        depends_str = ", ".join(step.depends_on) if step.depends_on else "(none)"
+        derivation_strs = []
+        for d in step.derivations:
+            deps = ", ".join(d.depends_on) if d.depends_on else "(none)"
+            val = f" = {d.claimed_value}" if d.claimed_value is not None else ""
+            derivation_strs.append(f"    - {d.premise}{val}  [depends: {deps}]")
+        derivation_block = "\n".join(derivation_strs) if derivation_strs else "    (none)"
+
+        computed = ", ".join(step.computed_fact_ids) if step.computed_fact_ids else "(none)"
+        derived = ", ".join(step.derived_fact_ids) if step.derived_fact_ids else "(none)"
+
         parts.append(
             f"Step {step.step_number}:\n"
-            f"OBJECTIVE: {step.objective}\n"
-            f"DEPENDS_ON: {depends_str}\n"
-            f"RESULT: {step.result_variable}\n"
-            f"OBSERVATION:\n{step.observation}\n"
-            f"PREMISES: {premises_str}\n"
-            f"CONCLUSION: {step.conclusion}\n"
-            f"PATTERN: {step.reasoning_pattern.value}\n"
-            f"VERIFICATION: PASSED"
+            f"  OBJECTIVE: {step.objective}\n"
+            f"  RESULT: {step.result_variable}\n"
+            f"  OBSERVATION: {step.observation}\n"
+            f"  DERIVATIONS:\n{derivation_block}\n"
+            f"  NEW COMPUTED FACTS: {computed}\n"
+            f"  NEW DERIVED FACTS: {derived}\n"
+            f"  STATUS: ACCEPTED"
         )
+
     if session.steps:
         parts.append(
-            "All steps above have been verified and accepted. "
+            "All steps above are verified and accepted. "
             "Continue investigating or provide your FINAL_ANSWER."
         )
     return parts
 
 
-def build_inference_context(
-    session: Session,
-    thought: str,
-    action: str,
-    observation: str,
-    objective: str = "",
-    result_variable: str = "",
+def build_rejection_feedback(
+    derivation: Derivation,
+    result: FalsificationResult,
 ) -> str:
-    """Build context for the inference generation LLM call."""
-    parts: list[str] = [f"Problem:\n{session.problem_text}"]
-    for step in session.steps:
-        parts.append(
-            f"Step {step.step_number}:\n"
-            f"OBJECTIVE: {step.objective}\n"
-            f"RESULT: {step.result_variable}\n"
-            f"OBSERVATION:\n{step.observation}\n"
-            f"INFERENCE: {step.inference}\n"
-            f"VERIFICATION: PASSED"
-        )
-    # Current step (not yet completed) -- full context needed for inference
-    step_num = len(session.steps) + 1
+    """Build feedback for the reasoner when a derivation is rejected."""
+    parts = [
+        f"DERIVATION REJECTED: {derivation.premise}",
+        f"Feedback: {result.feedback}",
+    ]
+    if result.hidden_assumptions:
+        parts.append(f"Hidden assumptions found: {'; '.join(result.hidden_assumptions)}")
+    if result.empirical_value is not None:
+        parts.append(f"Empirical value: {result.empirical_value}")
+    if derivation.claimed_value is not None:
+        parts.append(f"Your claimed value: {derivation.claimed_value}")
     parts.append(
-        f"Step {step_num} (current):\n"
-        f"OBJECTIVE: {objective}\n"
-        f"RESULT_VARIABLE: {result_variable}\n"
-        f"THOUGHT: {thought}\n"
-        f"ACTION:\n{action}\n"
-        f"OBSERVATION:\n{observation}\n"
-        f"\nNow provide your PREMISES, CONCLUSION, REASONING_PATTERN, "
-        f"and VERIFICATION_TARGET for this step."
+        "Please revise your reasoning. The above derivation was independently "
+        "tested and found to be inconsistent with empirical evidence."
     )
-    return "\n\n".join(parts)
-
-
-def build_step_history_summary(session: Session) -> str:
-    """Build a concise step history for retry prompts."""
-    if not session.steps:
-        return "(No prior steps)"
-    parts: list[str] = []
-    for step in session.steps:
-        parts.append(
-            f"Step {step.step_number}: {step.conclusion} "
-            f"[pattern: {step.reasoning_pattern.value}, "
-            f"verified: {step.verification_result.passed}]"
-        )
     return "\n".join(parts)
 
 
@@ -87,26 +82,3 @@ def make_code_repair_prompt(
     prior_attempts: list[tuple[str, str]] | None = None,
 ) -> str:
     return build_code_repair_prompt(thought, code, error, prior_attempts)
-
-
-def make_inference_retry_prompt(
-    session: Session,
-    observation: str,
-    premises: list[str],
-    conclusion: str,
-    reasoning_pattern: str,
-    verification_type: str,
-    failure_details: str,
-    prior_attempts: list[tuple[str, str, str]] | None = None,
-) -> str:
-    return build_inference_retry_prompt(
-        problem_text=session.problem_text,
-        step_history=build_step_history_summary(session),
-        observation=observation,
-        premises=premises,
-        conclusion=conclusion,
-        reasoning_pattern=reasoning_pattern,
-        verification_type=verification_type,
-        failure_details=failure_details,
-        prior_attempts=prior_attempts,
-    )

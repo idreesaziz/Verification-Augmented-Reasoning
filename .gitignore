@@ -25,6 +25,17 @@ env/
 
 # Results (keep structure, ignore data)
 results/*.jsonl
+results/*.json
+results/*.csv
+
+# Run artifacts / debug output
+*_output.txt
+*_results.json
+run_output.txt
+diagnostic_output.txt
+*.log
+diag.py
+test_single.py
 
 # OS
 .DS_Store

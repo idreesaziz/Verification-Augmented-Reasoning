@@ -1,4 +1,7 @@
-"""Gemini API provider with structured output support."""
+"""Gemini API provider with structured output support.
+
+VAR v2 — slim interface: reasoning, adversary, code fix, step revision.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +15,9 @@ from google.genai.errors import ServerError
 
 from var_reasoning.models.schemas import (
     CodeFix,
-    InferenceRevision,
-    InferenceStep,
-    SimulationCode,
+    FalsificationAttempt,
     StepOutput,
+    StepRevision,
 )
 
 _MAX_RETRIES = 3
@@ -64,6 +66,8 @@ class GeminiProvider:
                     raise
                 time.sleep(_RETRY_DELAY * (attempt + 1))
 
+    # ── Reasoner ─────────────────────────────────────────────────────
+
     def generate_reasoning_step(
         self, system_prompt: str, conversation: list[str]
     ) -> tuple[StepOutput, TokenUsage]:
@@ -76,24 +80,6 @@ class GeminiProvider:
                 temperature=0.3,
                 response_mime_type="application/json",
                 response_schema=StepOutput,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-                http_options=types.HttpOptions(timeout=120_000),
-            ),
-        )
-        usage = self._track_usage(response)
-        return response.parsed, usage
-
-    def generate_inference(
-        self, system_prompt: str, observation_context: str
-    ) -> tuple[InferenceStep, TokenUsage]:
-        response = self._call(
-            model=self.model_name,
-            contents=observation_context,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.3,
-                response_mime_type="application/json",
-                response_schema=InferenceStep,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
                 http_options=types.HttpOptions(timeout=120_000),
             ),
@@ -116,22 +102,49 @@ class GeminiProvider:
         usage = self._track_usage(response)
         return response.parsed, usage
 
-    def generate_inference_revision(
+    def generate_step_revision(
         self, prompt: str
-    ) -> tuple[InferenceRevision, TokenUsage]:
+    ) -> tuple[StepRevision, TokenUsage]:
         response = self._call(
             model=self.model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.3,
                 response_mime_type="application/json",
-                response_schema=InferenceRevision,
+                response_schema=StepRevision,
                 thinking_config=types.ThinkingConfig(thinking_budget=0),
                 http_options=types.HttpOptions(timeout=120_000),
             ),
         )
         usage = self._track_usage(response)
         return response.parsed, usage
+
+    # ── Adversary (firewalled) ───────────────────────────────────────
+
+    def generate_falsification(
+        self, system_prompt: str, context: str
+    ) -> tuple[FalsificationAttempt, TokenUsage]:
+        """Generate falsification code via a firewalled LLM call.
+
+        This call is deliberately isolated: it receives only the problem
+        statement and the claim to test, never the reasoning chain.
+        """
+        response = self._call(
+            model=self.model_name,
+            contents=context,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.4,  # Slightly higher for diverse attacks
+                response_mime_type="application/json",
+                response_schema=FalsificationAttempt,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                http_options=types.HttpOptions(timeout=120_000),
+            ),
+        )
+        usage = self._track_usage(response)
+        return response.parsed, usage
+
+    # ── One-shot (baselines) ─────────────────────────────────────────
 
     def generate_one_shot(
         self, problem: str, system_prompt: str, model_override: str | None = None
@@ -150,26 +163,3 @@ class GeminiProvider:
         usage = self._track_usage(response)
         text = response.text or ""
         return text, usage
-
-    def generate_simulation(
-        self, system_prompt: str, context: str
-    ) -> tuple[SimulationCode, TokenUsage]:
-        """Generate simulation code via a firewalled LLM call.
-
-        This call is deliberately isolated: it receives only the problem
-        statement and the claim to test, never the reasoning chain.
-        """
-        response = self._call(
-            model=self.model_name,
-            contents=context,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.4,  # Slightly higher for diverse simulations
-                response_mime_type="application/json",
-                response_schema=SimulationCode,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-                http_options=types.HttpOptions(timeout=120_000),
-            ),
-        )
-        usage = self._track_usage(response)
-        return response.parsed, usage

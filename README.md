@@ -1,159 +1,150 @@
 # Verification-Augmented Reasoning (VAR)
 
-Adversarial empirical falsification of LLM reasoning through **premise provenance tracking** and **information-firewalled verification**. Every intermediate claim is classified by its origin — inherited, computed, or derived — and derived claims are stress-tested by an independent adversarial verifier that generates its own falsification code without seeing the reasoning chain.
+Adversarial empirical falsification of LLM reasoning through **fact provenance tracking** and **information-firewalled verification**. Every intermediate claim is typed by its origin — given, computed, or derived — and derived claims are stress-tested by an independent adversarial verifier that generates its own falsification attempt without ever seeing the reasoning chain.
 
 ## Core Insight
 
-LLM reasoning agents fail not at code execution but at **wrong modeling assumptions** — probabilistic claims asserted without computation, logical leaps stated as fact. Standard verification (assertions, formal proofs, self-consistency) cannot catch these because:
+LLM reasoning fails not at arithmetic but at **unverified modeling assumptions** — probabilistic claims stated without computation, logical leaps dressed as facts. Standard verification cannot catch these because:
 
-- **Self-authored verification**: The reasoning model writes its own checks and will always find a tautology
-- **Formal methods**: Can prove `C(25,2) = 300` but cannot detect that the model is computing the *wrong quantity*
-- **Neural verifiers**: Score steps opaquely without producing falsifiable evidence
+- **Self-authored checks**: The reasoner writes its own assertions and will never assert its own blind spots
+- **Formal methods**: Can prove `C(25,2) = 300` but not that the model is computing the *right quantity*
+- **Self-consistency**: Agreement between samples of the same model does not rule out shared systematic error
 
-The solution: **premises are typed, and derived premises are independently falsified.**
+The fix: **every fact is typed, and derived facts are independently falsified.**
 
 ## Architecture
 
-### Premise Provenance
+### Fact Provenance (FactPool)
 
-Every premise in the reasoning chain has exactly one type:
+Every fact in the reasoning chain has exactly one type:
 
-| Type | Source | Verification | Example |
+| Type | Origin | Verification | Example |
 |------|--------|-------------|---------|
-| **INHERITED** | Verbatim from problem statement | None needed — axiom | "There are 25 segments" |
-| **COMPUTED** | Printed by executed code in a prior step | None needed — empirical fact | "Intersection probability = 0.4722" |
-| **DERIVED** | Logical deduction from prior premises | **Adversarial falsification** | "Every pair of chords intersects" |
+| **GIVEN** | Problem statement verbatim | Axiom — none needed | "There are 25 chords" |
+| **COMPUTED** | Printed by executed code | Empirical — trust the stdout | `P(intersect) = 0.4722` |
+| **DERIVED** | Logical deduction from prior facts | **Adversarial falsification required** | "Any two cross-quadrant chords intersect" |
 
-The model does not classify its own premises. The system classifies them by comparing each premise against (a) the problem text and (b) prior step observations. **Everything that isn't INHERITED or COMPUTED is DERIVED, and gets stress-tested.**
+The model does not classify its own outputs. The `FactPool` classifies them structurally: code output → COMPUTED, explicit `Derivation` schema objects → DERIVED, problem text → GIVEN. **The model cannot promote its own assumptions to trusted facts.**
 
 ### Adversarial Verification Pipeline
 
-DERIVED premises are sent to an independent adversarial verifier behind an **information firewall**:
+DERIVED facts are forwarded to a firewalled adversarial verifier:
 
 ```
-  Reasoning Agent                          Adversarial Verifier
-  ─────────────                            ────────────────────
+  Reasoner                                 Adversarial Verifier
+  ────────                                 ────────────────────
 
-  Step N produces:                         Receives ONLY:
-  ┌─────────────────────┐                  ┌─────────────────────┐
-  │ [INHERITED] 25 segs │──── skip ────    │ Problem statement   │
-  │ [COMPUTED]  0.4722  │──── skip ────    │                     │
-  │ [DERIVED]   "all    │────────────────► │ Bare claim: "all    │
-  │   pairs intersect"  │  FIREWALL        │   pairs intersect"  │
-  └─────────────────────┘   (no reasoning  └──────────┬──────────┘
-                             chain, no code,           │
-                             no prior steps)           ▼
+  Step N outputs:                          Receives ONLY:
+  ┌────────────────────┐                   ┌────────────────────┐
+  │ [GIVEN]  25 chords │──── skip ───      │ Problem statement  │
+  │ [COMPUTED] 0.4722  │──── skip ───      │                    │
+  │ [DERIVED] "chords  │───────────────►   │ Bare claim: "chord │
+  │  always intersect" │   FIREWALL        │  pairs intersect"  │
+  └────────────────────┘  (no reasoning,   └─────────┬──────────┘
+                           no code, no               │
+                           prior context)            ▼
+                                           ┌─────────────────────┐
+                                           │ Choose attack mode: │
+                                           │                     │
+                                           │ Z3          →       │
+                                           │  find counterexample│
+                                           │                     │
+                                           │ Monte Carlo →       │
+                                           │  simulate & measure │
+                                           │                     │
+                                           │ Brute Force →       │
+                                           │  enumerate all cases│
+                                           └─────────┬───────────┘
+                                                     │
+                                                     ▼
                                            ┌──────────────────────┐
-                                           │ Choose attack tool:  │
-                                           │                      │
-                                           │ • Z3  → find a       │
-                                           │   counterexample     │
-                                           │                      │
-                                           │ • Monte Carlo → sim  │
-                                           │   the actual process  │
-                                           │   and measure         │
-                                           │                      │
-                                           │ • Brute-force →      │
-                                           │   enumerate all cases │
-                                           └──────────┬──────────┘
-                                                      │
-                                                      ▼
+                                           │ Isolated subprocess  │
+                                           │ execution → number   │
+                                           └─────────┬────────────┘
+                                                     │
+                                                     ▼
                                            ┌──────────────────────┐
-                                           │ Sandbox execution    │
-                                           │ → produces a number  │
-                                           └──────────┬──────────┘
-                                                      │
-                                                      ▼
-                                           ┌──────────────────────┐
-                                           │ Statistical test     │
-                                           │ (e-value, exact      │
-                                           │  match, SAT/UNSAT)   │
-                                           │                      │
+                                           │ Statistical decision  │
+                                           │ e-value / SAT / exact │
+                                           │                       │
                                            │ → REJECT / SURVIVE   │
                                            └──────────────────────┘
 ```
 
-### Key Properties
+If REJECT → the step is discarded and the reasoner backtracks with the adversary's counterevidence.  
+If SURVIVE → the DERIVED fact is committed to the FactPool at confidence `1 − 1/e`.
 
-**Information firewall**: The verifier sees the problem + bare claim only. It cannot inherit the reasoner's blind spots because it never sees the reasoning.
+### Key Design Properties
 
-**Adversarial framing**: The verifier is prompted to *assume the claim is wrong* and find the hidden assumption that makes it false. It generates falsification code, not confirmation code.
+**Information firewall**: The verifier sees only the problem statement and the bare isolated claim. It cannot inherit the reasoner's blind spots.
 
-**Dual falsification tools**:
-- **Z3** — for universal/logical claims ("all X satisfy P" → find counterexample)
-- **Monte Carlo** — for stochastic/probabilistic claims ("E[X] = v" → simulate and measure)
-- The verifier chooses whichever tool is most likely to break the claim.
+**Adversarial framing**: The verifier is prompted to *assume the claim is wrong* and find the hidden condition that makes it fail. It generates falsification code, not confirmation code.
 
-**Model cannot influence verification**: The adversary generates the code. A fixed statistical test makes the accept/reject decision. The reasoning model never touches either.
+**Three attack modes**:
+- **Z3** — for universal/logical claims: find a counterexample via constraint solving
+- **Monte Carlo** — for stochastic/probabilistic claims: simulate the process and compare to the claimed value
+- **Brute Force** — for finite enumerable claims: check all cases
 
-**Structured outputs everywhere**: All LLM calls use structured output schemas (Pydantic models). Premise types, claim formats, tool choices — all enforced by the schema, not by prompt compliance.
+**Structured output throughout**: Every LLM call returns a Pydantic-validated schema (`ReasoningStep`, `FalsificationAttempt`, `FinalAnswer`). No prompt-compliance parsing.
+
+**Model cannot influence its own verdict**: The adversary generates the code; a fixed statistical test makes the accept/reject call. The reasoner never touches either.
 
 ### E-Value Statistical Engine
 
-For Monte Carlo falsification, the system uses **e-values** for hypothesis testing:
+Monte Carlo falsification uses **e-values** rather than p-values:
 
 - **Proportion claims**: Likelihood-ratio e-value with MLE alternative
-- **Continuous claims**: Gaussian likelihood-ratio via CLT
-- **Deterministic claims**: Exact match or infinite evidence
+- **Continuous/mean claims**: Gaussian likelihood-ratio via CLT
+- **Deterministic claims**: Exact match (e = ∞ or 0)
 
-Thresholds: `E > 1000` → REJECT, `E > 20` → SUSPECT
+Thresholds: `e > 1000` → REJECT, `e > 20` → SUSPECT.  
+E-values are **anytime-valid** and **composable** — no multiple-testing correction needed across steps.
 
-E-values are **anytime-valid** and **composable** (multiply across steps — no Bonferroni needed).
-
-### Failure Modes and Safeguards
+### Limitations and Known Failure Modes
 
 | Failure | Mitigation |
 |---------|------------|
-| Simulation timeout | Progressive fallback (50K → 5K → 500 trials). Timeout → BLOCK, never PASS. |
-| False rejection (buggy sim) | High e-value threshold. Convergence check at two sample sizes. Worst case = one retry. |
-| Non-simulatable claim | Reported as INCONCLUSIVE. Z3 may still handle it. Some claims genuinely can't be tested. |
-| Model mislabels premises | Model doesn't classify — the system does, by matching against problem text and prior observations. |
+| Adversary simulation timeout | 45s hard cutoff; timeout → INCONCLUSIVE, never forced SURVIVE |
+| False rejection from buggy simulation | High e-value threshold (1000×); worst case = one backtrack retry |
+| Unsimulatable claim | Reported INCONCLUSIVE; Z3 may still handle it |
+| Same-model epistemic correlation | Both reasoner and adversary share the same model's systematic blind spots; firewalling is causal, not cognitive — a known open problem |
+
+The last point is the central limitation of single-model adversarial verification: **prompt-level independence ≠ epistemic independence**. An adversary drawn from the same distribution will tend to reproduce the same modeling errors as the reasoner, even when it cannot see the reasoning.
 
 ## Setup
 
-1. **Install dependencies:**
-   ```bash
-   pip install -e ".[dev]"
-   ```
+```bash
+pip install -e ".[dev]"
+```
 
-2. **Set your API key:**
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your Gemini API key
-   ```
+Set your Gemini API key:
+```bash
+export GEMINI_API_KEY=your_key_here   # Linux/macOS
+$env:GEMINI_API_KEY="your_key_here"  # Windows PowerShell
+```
 
-3. **Ensure Docker is running** (required for sandboxed code execution).
+Code execution runs in an isolated subprocess (no Docker required for basic use).
 
 ## Usage
 
-### Run AIME evaluation
+### Single problem
 ```bash
-# Single problem (AIME 2025 I P13)
 python run_aime_single.py
-
-# Full AIME set
-python run_aime.py
-
-# AIME 2025 problems
-python run_aime_2025.py
 ```
 
-### Run an experiment
+### Experiment suite
 ```bash
-# Full VAR system on GSM8K
+# Full VAR system
 python -m var_reasoning run --condition C --benchmark gsm8k --num-problems 200
 
-# Baseline (one-shot, no tools)
+# Baseline (no tools)
 python -m var_reasoning run --condition A --benchmark gsm8k --num-problems 200
 
-# Code execution only (no verification)
+# Code execution only, no adversarial verification
 python -m var_reasoning run --condition B --benchmark math --num-problems 200
-
-# Ceiling (Gemini 2.5 Pro, one-shot)
-python -m var_reasoning run --condition D --benchmark gsm8k --num-problems 200
 ```
 
-### Analyze results
+### Analysis
 ```bash
 python -m var_reasoning analyze --benchmark gsm8k
 python -m var_reasoning plot --benchmark gsm8k
@@ -161,43 +152,47 @@ python -m var_reasoning plot --benchmark gsm8k
 
 ## Experimental Conditions
 
-| Condition | Model | Code Execution | Verification | Backtracking |
-|-----------|-------|---------------|--------------|--------------|
-| A (baseline) | Gemini 2.5 Flash | No | No | No |
-| B (code exec) | Gemini 2.5 Flash | Yes | No | No |
-| C (full VAR) | Gemini 2.5 Flash | Yes | Yes (multi-layer) | Yes |
-| D (ceiling) | Gemini 2.5 Pro | No | No | No |
+| Condition | Code Execution | Adversarial Verification | Backtracking |
+|-----------|---------------|--------------------------|--------------|
+| A — baseline | No | No | No |
+| B — code only | Yes | No | No |
+| C — full VAR | Yes | Yes | Yes |
+| D — ceiling (Pro) | No | No | No |
 
-## Project Structure (Redesign — WIP)
+All conditions use Gemini 2.5 Flash except D (Gemini 2.5 Pro).
+
+## Project Structure
 
 ```
 src/var_reasoning/
-├── engine/             # Core reasoning loop
-│   ├── step_engine.py          # Step execution + code repair
-│   └── backtracking.py         # Retry / backtrack on rejection
-├── models/             # LLM provider, Pydantic schemas, session state
-│   ├── gemini_provider.py      # Structured output LLM calls
-│   ├── schemas.py              # Enforced schemas for all LLM outputs
-│   └── state.py                # Session, CompletedStep, premise chain
-├── prompts/            # System prompts
-│   ├── reasoning_prompt.py     # Reasoner: compute, don't assume
-│   └── adversary_prompt.py     # Adversarial verifier: assume wrong, falsify
-├── provenance/         # Premise provenance system
-│   ├── classifier.py           # Classify premises: INHERITED / COMPUTED / DERIVED
-│   └── chain.py                # Provenance graph across steps
-├── verification/       # Adversarial falsification engine
-│   ├── adversary.py            # Firewalled adversarial verifier orchestrator
+├── engine/
+│   ├── step_engine.py          # Main loop: reason → compute → falsify → commit
+│   ├── backtracking.py         # Backtrack on adversarial rejection
+│   └── feedback.py             # Build conversation context from FactPool
+├── models/
+│   ├── gemini_provider.py      # Gemini API wrapper with structured output
+│   ├── schemas.py              # Pydantic schemas for all LLM I/O
+│   └── state.py                # FactPool, Session, Fact, FalsificationResult
+├── prompts/
+│   ├── reasoning_prompt.py     # Reasoner system prompt
+│   └── adversary_prompt.py     # Adversary system prompt
+├── verification/
+│   ├── adversary.py            # Firewalled adversarial falsification orchestrator
 │   ├── e_value.py              # E-value statistical engine
-│   └── sandbox.py              # Isolated code execution (subprocess)
-└── benchmarks/         # Dataset loaders (GSM8K, MATH, FOLIO, HumanEval)
+│   ├── z3_verifier.py          # Z3 constraint-based verifier
+│   └── sympy_verifier.py       # Symbolic math verifier
+├── sandbox/
+│   └── executor.py             # Isolated code execution
+├── benchmarks/                 # Dataset loaders: GSM8K, MATH, FOLIO, HumanEval
+└── experiment/                 # Condition runner, metrics, cost tracking
 ```
 
 ## Benchmarks
 
-- **GSM8K**: Grade school math word problems
-- **MATH**: Competition mathematics
-- **FOLIO**: First-order logic inference
-- **HumanEval**: Code generation
+- **GSM8K** — grade school math word problems
+- **MATH** — competition mathematics  
+- **FOLIO** — first-order logic natural language inference
+- **HumanEval** — code generation
 
 ## Running Tests
 ```bash
